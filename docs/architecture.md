@@ -42,7 +42,7 @@ flowchart BT
 | Run | hours, one patient | EnKF soft sensor and recommendations (days 6 to 8) | operator and QA |
 | Campaign | between process-development runs | Gaussian-process Bayesian optimisation (day 10) | the process development team |
 
-## What exists now (days 1 and 2)
+## What exists now (days 1 to 3)
 
 - `process/parameters.py`: every parameter with unit, status and source, the
   literature anchors, and patients A and B.
@@ -51,3 +51,6 @@ flowchart BT
 - `control/pid.py`, `control/rocker.py`: the inner loop.
 - `sim/runner.py`: a batch stepped one control interval at a time, with a
   recorded history; `sim/clock.py`: the accelerated clock for live mode.
+- `sensors/`: online channels with noise, drift and faults; at-line
+  analysers with turnaround and sample cost; flow cytometry at harvest; soft
+  measurements of oxygen uptake and acid production. See [sensors.md](sensors.md).

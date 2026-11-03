@@ -24,6 +24,7 @@ uv pip install -e ".[dev]"
 pytest
 python scripts/run_two_patients.py   # outputs/two_patients.png and CSVs
 python scripts/step_response.py      # outputs/step_response.png
+python scripts/sensor_demo.py        # outputs/sensors.png: what the platform sees
 ```
 
 Plain `pip` works too: `python -m venv .venv`, then `pip install -e ".[dev]"`.
@@ -36,11 +37,14 @@ src/cltherapy/
   process/model.py       two-population model, rates, observables
   control/pid.py         PI controller with anti-windup
   control/rocker.py      inner loop: pH by CO2, DO by rock rate then O2, perfusion
+  sensors/online.py      optical pH and DO patches, load cell: noise, drift, update rate, faults
+  sensors/atline.py      cell counter and metabolite analyser with turnaround; flow at harvest
+  sensors/soft.py        soft measurements: oxygen uptake and acid production
   sim/runner.py          batch simulation with recorded history and CSV export
   sim/clock.py           accelerated clock for live runs
 scripts/                 example runs and plots
 tests/                   checks on physics, anchors and control
-docs/                    architecture and calibration plan
+docs/                    architecture, calibration plan, sensor table
 ```
 
 ## Status
@@ -49,8 +53,8 @@ docs/                    architecture and calibration plan
 | --- | --- | --- |
 | 1 | Repo, architecture, two-population model | done |
 | 2 | Patients A and B, accelerated clock, rocking-bag controller | done (literature fit pending data) |
-| 3 | Sensor layer: noise, drift, sampling, delays | next |
-| 4 | Rocker as an OPC UA server | |
+| 3 | Sensor layer: noise, drift, sampling, delays | done; see [docs/sensors.md](docs/sensors.md) |
+| 4 | Rocker as an OPC UA server | next |
 | 5 | Analyser as a REST API, data collector | |
 | 6 | EnKF soft sensor, sampling by information gain | |
 | 7 | Run state machine and scheduler | |
