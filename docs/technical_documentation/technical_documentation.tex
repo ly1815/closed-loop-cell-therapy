@@ -1,0 +1,830 @@
+\documentclass[11pt,a4paper]{article}
+
+% ------------------------------------------------------------------ packages
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{newtxtext,newtxmath}
+\usepackage[margin=24mm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,mathtools}
+\usepackage{siunitx}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[shortlabels]{enumitem}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent]{hyperref}
+
+\definecolor{accent}{HTML}{0F6E56}
+\definecolor{boxbg}{HTML}{EEF4F2}
+\graphicspath{{figures/}}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.8em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\itshape}{\thesubsubsection}{0.8em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[L]{\small\color{gray}Closed-loop cell therapy: technical documentation, days 1--3}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+\lstset{basicstyle=\ttfamily\footnotesize, backgroundcolor=\color{boxbg}, frame=none,
+        columns=fullflexible, keepspaces=true, xleftmargin=4pt, framexleftmargin=4pt,
+        aboveskip=8pt, belowskip=8pt}
+
+\newtcolorbox{note}[1][]{colback=boxbg, colframe=accent, boxrule=0.6pt, arc=1pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt, fonttitle=\bfseries, #1}
+
+\sisetup{per-mode=symbol, range-phrase=--, range-units=single}
+\DeclareSIUnit\mM{mM}
+\DeclareSIUnit\cell{cell}
+\DeclareSIUnit\rpm{rpm}
+\DeclareSIUnit\VVD{VVD}
+\DeclareSIUnit\mmHg{mmHg}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\kla}{k_La}
+\newcommand{\Mcell}{\num{e6}~cells/mL}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\renewcommand{\arraystretch}{1.15}
+
+\title{\color{accent}\textbf{Closed-loop cell therapy}\\[4pt]
+\large Technical documentation of the process model and of the work done so far (days 1 to 3)}
+\author{Luxi Yu}
+\date{Repository \code{closed-loop-cell-therapy}, commit \code{5e6611b}, version 0.1.0}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{note}[title={In one paragraph}]
+The repository simulates one autologous CAR-T batch that grows for about ten days in a perfused rocking
+bag. The heart of it is \code{process/model.py}: seven ordinary differential equations for two T-cell
+populations (memory-like and effector-like), dead cells, glucose, lactate, bicarbonate and dissolved
+oxygen. Around the model sit an inner control loop (the rocker's own pH and DO controller), a sensor layer
+that turns the true state into noisy, drifting, delayed measurements, and a runner that advances everything
+one five-minute control interval at a time. The question behind the project: the memory-cell share falls
+as the culture gets longer, but it is normally measured only at harvest. Can it be estimated during the
+run, with uncertainty, and used to decide when to sample and when to harvest?
+\end{note}
+
+\tableofcontents
+\newpage
+
+% =====================================================================
+\section{What exists so far: the three steps}
+The README plans the project as twelve day-sized steps. The first three are done. The second git commit
+covers days~1 and~2 together; the third commit is day~3.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}c p{3.3cm} X p{3.6cm}@{}}
+\toprule
+Day & Step & What it added & Main files \\
+\midrule
+1 & Repo, architecture, two-population model &
+Package layout, ISA-95 architecture note, the seven-state ODE model with its rate laws and observables,
+parameters with units, status and sources. &
+\code{process/model.py}, \code{process/parameters.py}, \code{docs/architecture.md}, \code{docs/calibration.md} \\
+\addlinespace
+2 & Patients A and B, clock, rocking-bag controller &
+Two calibrated patients (a fit donor and a slow donor), the PI controller, the rocker's pH, DO and perfusion
+loops with hard limits, the batch runner, the accelerated clock, two demo scripts and tests. &
+\code{control/pid.py}, \code{control/rocker.py}, \code{sim/runner.py}, \code{sim/clock.py} \\
+\addlinespace
+3 & Sensor layer &
+Online pH and DO patches and load cell (noise, drift, update rate, faults); the controller now acts on
+readings, not truth; at-line cell counter and metabolite analyser with turnaround; closed sampling that
+costs cells; flow cytometry at harvest; soft sensors for oxygen uptake and acid production. &
+\code{sensors/online.py}, \code{sensors/atline.py}, \code{sensors/soft.py}, \code{docs/sensors.md} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+All 18 tests pass on this commit. The figures in this document were produced by running the current code.
+
+% =====================================================================
+\section{Repository map}
+\begin{lstlisting}
+closed-loop-cell-therapy/
+  pyproject.toml        package 'cltherapy'; numpy, scipy, matplotlib; extras for later steps
+  src/cltherapy/
+    process/            the simulated world (ground truth); knows nothing about sensors or control
+      parameters.py     every parameter with unit, status and source; patients A and B
+      model.py          states, inputs, rate laws, ODE right-hand side, observables
+    control/            the rocker's embedded firmware
+      pid.py            PI controller with output limits and anti-windup
+      rocker.py         pH by CO2; DO by rock rate then O2; perfusion schedule; hard limits
+    sensors/            what the platform can actually see
+      online.py         optical pH and DO patches, load cell: noise, drift, hold, faults
+      atline.py         cell counter, metabolite analyser, flow cytometry at harvest
+      soft.py           oxygen uptake rate and acid production from online signals
+    sim/
+      runner.py         Batch: control step, ODE integration, history, sampling, CSV
+      clock.py          simulated hours per wall-clock second, for live mode later
+  scripts/              run_two_patients.py, step_response.py, sensor_demo.py -> outputs/
+  tests/                test_process, test_control, test_sensors, test_clock
+  docs/                 architecture.md, calibration.md, sensors.md
+\end{lstlisting}
+
+Dependencies point one way. \emph{process} depends on nothing; \emph{control} imports only the
+\code{Inputs} dataclass from the model; \emph{sensors} reuse the model's $\kla$ correlation; \emph{sim}
+ties them together:
+\begin{lstlisting}
+parameters --> model (truth) --> sensors (noisy view) --> rocker controller
+                  ^                                            |
+                  +---------- Inputs (CO2, O2, rpm, VVD) <-----+
+\end{lstlisting}
+
+% =====================================================================
+\section{The process model (\texttt{model.py})}
+
+\subsection{Conventions and units}
+Time $t$ is in hours. Cell densities are in \Mcell. Concentrations are in \si{\mM}. Cell-specific rates
+$q$ are in \si{pmol\per\cell\per\hour}. These units make a specific rate times a density directly a
+volumetric rate in \si{\mM\per\hour}:
+\begin{equation}
+  \SI{1}{pmol\per\cell\per\hour}\times\SI{e6}{cells\per\milli\litre}
+  = \frac{\SI{e-12}{mol}\times\num{e6}}{\SI{e-3}{\litre}\cdot\si{\hour}}
+  = \SI{e-3}{mol\per\litre\per\hour} = \SI{1}{\mM\per\hour}.
+\end{equation}
+The bag volume is constant at \SI{1}{\litre}: perfusion removes exactly what it adds, and a
+cell-retention filter keeps all cells, live and dead, in the bag. Temperature is held at \SI{37}{\celsius}.
+
+\subsection{State vector}
+\begin{equation}
+  x = \begin{pmatrix} M & E & X_d & G & L & B & O \end{pmatrix}^{\!\top}
+\end{equation}
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}c c X c X@{}}
+\toprule
+Index & Symbol & Meaning & Unit & Initial value $x(0)$ \\
+\midrule
+0 & $M$   & memory-like viable cells & \Mcell & $X_0\,m_0$ \\
+1 & $E$   & effector-like viable cells & \Mcell & $X_0\,(1-m_0)$ \\
+2 & $X_d$ & dead cells (retained, never lysed) & \Mcell & $X_0\,(1-v_0)/v_0$ \\
+3 & $G$   & glucose & \si{\mM} & $G_{\mathrm{in}} = 20$ \\
+4 & $L$   & lactate & \si{\mM} & $L_{\mathrm{in}} = 0$ \\
+5 & $B$   & bicarbonate & \si{\mM} & $B_{\mathrm{in}} = 24$ \\
+6 & $O$   & dissolved oxygen & \si{\mM} & $C^*_{\mathrm{air}}\,y_{\mathrm{O_2}}/0.21$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Here $X_0$ is the seed density, $m_0$ the seed memory fraction and $v_0$ the seed viability, so that the
+initial viability is $(M+E)/(M+E+X_d) = v_0$. The order is fixed by
+\code{STATE\_NAMES}. Every function first clips the state to $x \ge 0$, so a solver overshoot below zero never
+produces a negative rate.
+
+\subsection{Inputs}
+The inputs $u$ are set by the controller once per control interval and held constant while the ODEs are
+integrated (a zero-order hold).
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l c X l l@{}}
+\toprule
+Field & Symbol & Meaning & Default & Set by \\
+\midrule
+\code{perfusion\_vvd} & $V\!V\!D$ & fresh medium, vessel volumes per day & 0 & perfusion schedule \\
+\code{rock\_rpm} & $n$ & rocking rate & \SI{15}{\rpm} & DO loop (first half) \\
+\code{rock\_angle\_deg} & $\theta$ & rocking angle & \ang{6} & fixed \\
+\code{y\_O2} & $y_{\mathrm{O_2}}$ & O$_2$ fraction in headspace gas & 0.21 & DO loop (second half) \\
+\code{y\_CO2} & $y_{\mathrm{CO_2}}$ & CO$_2$ fraction in headspace gas & 0.05 & pH loop \\
+\bottomrule
+\end{tabularx}
+\end{center}
+The dilution rate used in the balances is
+\begin{equation}
+  D = \frac{V\!V\!D}{24} \quad [\si{\per\hour}].
+\end{equation}
+
+\subsection{Physical sub-models}
+
+\subsubsection{Oxygen transfer: \texttt{kla()}}
+Rocking creates a wave and the gas--liquid surface that oxygen crosses. The volumetric transfer
+coefficient is a power law normalised to a reference setting:
+\begin{equation}
+  \kla(n,\theta) = \kla_{\mathrm{ref}}
+  \left(\frac{n}{n_{\mathrm{ref}}}\right)^{\!\alpha_n}
+  \left(\frac{\theta}{\theta_{\mathrm{ref}}}\right)^{\!\alpha_\theta},
+  \label{eq:kla}
+\end{equation}
+with $\kla_{\mathrm{ref}} = \SI{2.0}{\per\hour}$, $n_{\mathrm{ref}} = \SI{15}{\rpm}$,
+$\theta_{\mathrm{ref}} = \ang{6}$, $\alpha_n = 0.8$ and $\alpha_\theta = 0.5$. At $\theta = \ang{6}$ this gives \SI{0.96}{\per\hour} at the minimum \SI{6}{\rpm}, \SI{2.0}{\per\hour} at
+\SI{15}{\rpm} and \SI{3.0}{\per\hour} at the maximum \SI{25}{\rpm}. The oxygen concentration in
+equilibrium with the gas is
+\begin{equation}
+  C^* = C^*_{\mathrm{air}}\,\frac{y_{\mathrm{O_2}}}{0.21},
+  \qquad C^*_{\mathrm{air}} = \SI{0.19}{\mM},
+  \label{eq:cstar}
+\end{equation}
+and dissolved oxygen is reported as $\mathrm{DO} = 100\,O/C^*_{\mathrm{air}}$ in \% air saturation.
+
+\subsubsection{pH: \texttt{ph\_from()}}
+pH follows from the bicarbonate buffer and the headspace CO$_2$ through Henderson--Hasselbalch at
+\SI{37}{\celsius}:
+\begin{equation}
+  \mathrm{pH} = \mathrm{p}K_a + \log_{10}\!\frac{B}{s\,p_{\mathrm{CO_2}}},
+  \qquad p_{\mathrm{CO_2}} = \kappa\,y_{\mathrm{CO_2}},
+  \label{eq:hh}
+\end{equation}
+with $\mathrm{p}K_a = 6.1$, $s = \SI{0.0307}{\mM\per\mmHg}$ and $\kappa = \SI{713}{\mmHg}$ per unit gas
+fraction. Fresh medium ($B = \SI{24}{\mM}$) under 5\% CO$_2$ gives
+\[
+  \mathrm{pH} = 6.1 + \log_{10}\frac{24}{0.0307 \times 713 \times 0.05} = 6.1 + \log_{10} 21.9 = 7.44 .
+\]
+More CO$_2$ lowers pH; lactic acid consumes bicarbonate and also lowers it. pH is not a state: it is
+recomputed from $B$ and $y_{\mathrm{CO_2}}$ wherever it is needed. Floors $y_{\mathrm{CO_2}} \ge 10^{-4}$ and
+$B \ge \SI{e-3}{\mM}$ keep the logarithm finite.
+
+\subsection{Rate laws: \texttt{rates()}}
+\code{rates()} computes every rate at one instant. It is separate from the right-hand side because the
+soft sensors and the observables reuse the same quantities.
+
+\subsubsection{Growth factors}
+Growth is a maximum rate multiplied by five dimensionless factors in $[0,1]$:
+\begin{equation}
+  f = f_{\mathrm{lag}}(t)\; f_G(G)\; f_L(L)\; f_{\mathrm{pH}}(\mathrm{pH})\; f_{\mathrm{O_2}}(O),
+  \label{eq:f}
+\end{equation}
+\begin{align}
+  f_{\mathrm{lag}}(t) &= 1 - e^{-t/\tau_{\mathrm{lag}}}, & \tau_{\mathrm{lag}} &= \SI{24}{\hour}, \label{eq:flag}\\
+  f_G(G) &= \frac{G}{K_G + G}, & K_G &= \SI{0.5}{\mM}, \label{eq:fG}\\
+  f_L(L) &= \frac{K_{iL}}{K_{iL} + L}, & K_{iL} &= \SI{40}{\mM}, \label{eq:fL}\\
+  f_{\mathrm{pH}}(\mathrm{pH}) &=
+    \begin{cases}
+      1, & \mathrm{pH} \ge \mathrm{pH}_{\mathrm{low}},\\[2pt]
+      \max\!\bigl(0,\; 1 - 4\,(\mathrm{pH}_{\mathrm{low}} - \mathrm{pH})\bigr), & \mathrm{pH} < \mathrm{pH}_{\mathrm{low}},
+    \end{cases}
+    & \mathrm{pH}_{\mathrm{low}} &= 6.95, \label{eq:fpH}\\
+  f_{\mathrm{O_2}}(O) &= \frac{O}{K_{\mathrm{O_2}} + O}, & K_{\mathrm{O_2}} &= \SI{0.005}{\mM}. \label{eq:fO2}
+\end{align}
+In words: cells need about a day after activation before dividing at full speed; glucose limits growth
+only when nearly exhausted; lactate halves growth at \SI{40}{\mM}; pH has no effect above 6.95 and stops
+growth linearly by pH 6.70; oxygen limits growth only below a few percent air saturation
+($K_{\mathrm{O_2}}$ is about 2.6\% of air saturation and is hard-coded, see section~\ref{sec:obs}).
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{modifiers.png}
+  \caption{The growth factors \eqref{eq:flag}--\eqref{eq:fpH}. $f_{\mathrm{O_2}}$ is not shown; it is
+  close to 1 above about 10\% air saturation.}
+  \label{fig:modifiers}
+\end{figure}
+
+\subsubsection{Growth}
+\begin{equation}
+  \mu_M = \mu_{\max,M}\,f, \qquad \mu_E = \mu_{\max,E}\,f .
+  \label{eq:mu}
+\end{equation}
+Effector-like cells grow faster than memory-like cells: for patient~A,
+$\mu_{\max,E} = \SI{0.0306}{\per\hour}$ and $\mu_{\max,M} = \SI{0.0205}{\per\hour}$, doubling times
+$\ln 2/\mu_{\max}$ of about \SI{23}{\hour} and \SI{34}{\hour} at $f = 1$. Both populations share the same
+environmental factor $f$.
+
+\subsubsection{Differentiation from memory to effector}
+\begin{equation}
+  k_{\mathrm{diff}}(t) = k_{\mathrm{diff},0}\; 2^{\,t/T_d}\; \bigl(1 - r_a\,a\bigr),
+  \label{eq:kdiff}
+\end{equation}
+with $k_{\mathrm{diff},0} = \SI{0.0018}{\per\hour}$, $T_d = \SI{210}{\hour}$ (the rate doubles about every
+8.75~days), $r_a = 0.5$, and $a \in [0,1]$ the patient's activation strength. The rising rate encodes the
+observation that longer culture pushes cells towards a differentiated phenotype. Strong activation slows
+differentiation: at $a = 1$ the rate is halved.
+
+\subsubsection{Metabolism}
+\begin{align}
+  q_G &= \bigl(q_{G,M}\,M + q_{G,E}\,E\bigr)\, f_G(G), \label{eq:qG}\\
+  r_L &= Y_{L/G}\; q_G\; \beta(t), \qquad
+  \beta(t) = 1 + b\,a\,e^{-t/\tau_b}, \label{eq:rL}\\
+  \mathrm{OUR} &= \bigl(q_{\mathrm{O_2},M}\,M + q_{\mathrm{O_2},E}\,E\bigr)\, f_{\mathrm{O_2}}(O). \label{eq:our}
+\end{align}
+$q_G$ is the volumetric glucose uptake, $r_L$ the lactate production and OUR the oxygen uptake rate, all
+in \si{\mM\per\hour}. Effector-like cells are more glycolytic ($q_{G,E} = 0.060$ versus
+$q_{G,M} = \SI{0.035}{pmol\per\cell\per\hour}$); memory-like cells rely more on oxidative phosphorylation
+($q_{\mathrm{O_2},M} = 0.030$ versus $q_{\mathrm{O_2},E} = \SI{0.020}{pmol\per\cell\per\hour}$). Lactate
+is made at $Y_{L/G} = 1.6$ mol per mol glucose. $\beta(t)$ is the early glycolytic burst: activation adds
+up to $b = 1$ (double lactate) at $t = 0$, decaying with $\tau_b = \SI{36}{\hour}$. Glucose uptake is
+limited only by glucose itself, not by $f_{\mathrm{lag}}$, $f_{\mathrm{pH}}$ or $f_L$.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{diff.png}
+  \caption{Left: differentiation rate \eqref{eq:kdiff} for three activation strengths (patient~B uses
+  $a = 0.25$, patient~A $a = 0.5$). Right: the lactate burst factor $\beta(t)$ of \eqref{eq:rL}.}
+  \label{fig:diff}
+\end{figure}
+
+\begin{note}[title={The modelling hypothesis}]
+The single patient parameter $a$ does two things: it raises early lactate production through $\beta(t)$
+and it slows later differentiation through \eqref{eq:kdiff}. Together they encode the correlation reported
+by Jagannathan et al.\ (SMART, \emph{Cell Reports Methods} 2026) that early lactate goes with more central
+memory at harvest. This gives the future EnKF a measurable early signal (lactate, acid production) that
+carries information about a hidden late quantity (the memory share). The code calls this structure a
+hypothesis to test.
+\end{note}
+
+\subsection{The ODE system: \texttt{rhs()}}
+With death rates $\delta_M = \SI{0.001}{\per\hour}$ and $\delta_E = \SI{0.003}{\per\hour}$:
+\begin{subequations}\label{eq:ode}
+\begin{align}
+  \frac{\dd M}{\dd t}   &= \bigl(\mu_M - k_{\mathrm{diff}} - \delta_M\bigr)\, M, \label{eq:dM}\\
+  \frac{\dd E}{\dd t}   &= \bigl(\mu_E - \delta_E\bigr)\, E + k_{\mathrm{diff}}\, M, \label{eq:dE}\\
+  \frac{\dd X_d}{\dd t} &= \delta_M M + \delta_E E, \label{eq:dXd}\\
+  \frac{\dd G}{\dd t}   &= D\,(G_{\mathrm{in}} - G) - q_G, \label{eq:dG}\\
+  \frac{\dd L}{\dd t}   &= D\,(L_{\mathrm{in}} - L) + r_L, \label{eq:dL}\\
+  \frac{\dd B}{\dd t}   &= D\,(B_{\mathrm{in}} - B) - \gamma\, r_L, \label{eq:dB}\\
+  \frac{\dd O}{\dd t}   &= \kla\,\bigl(C^* - O\bigr) - \mathrm{OUR}. \label{eq:dO}
+\end{align}
+\end{subequations}
+Read line by line:
+\begin{itemize}[nosep]
+  \item \textbf{Cells} \eqref{eq:dM}--\eqref{eq:dE} have no dilution term: the perfusion filter retains
+    them. Memory cells leave their pool by differentiation and death; effector cells gain what memory cells
+    lose by differentiation.
+  \item \textbf{Dead cells} \eqref{eq:dXd} only accumulate, so viability drifts down slowly.
+  \item \textbf{Glucose, lactate and bicarbonate} \eqref{eq:dG}--\eqref{eq:dB} are perfused-reactor balances:
+    inflow at fresh-medium concentration, outflow at bag concentration, plus consumption or production.
+  \item \textbf{Bicarbonate} absorbs only a share $\gamma = 0.4$ of the lactic acid; the rest is taken up
+    by HEPES and other buffers, lumped into this one number.
+  \item \textbf{Oxygen} \eqref{eq:dO} enters only through the surface and is not carried by perfusion.
+\end{itemize}
+
+\subsection{Why the memory share falls}
+Let $X = M + E$ be the viable density and $m = M/X$ the memory share. Then
+\[
+  \frac{\dd m}{\dd t} = \frac{1}{X}\frac{\dd M}{\dd t} - \frac{M}{X^2}\frac{\dd X}{\dd t}
+  = m\left[\frac{1}{M}\frac{\dd M}{\dd t} - \frac{1}{X}\frac{\dd X}{\dd t}\right].
+\]
+From \eqref{eq:dM}--\eqref{eq:dE},
+\[
+  \frac{1}{M}\frac{\dd M}{\dd t} = \mu_M - k_{\mathrm{diff}} - \delta_M,
+  \qquad
+  \frac{1}{X}\frac{\dd X}{\dd t} = m\,(\mu_M - \delta_M) + (1-m)\,(\mu_E - \delta_E),
+\]
+where the $k_{\mathrm{diff}}$ terms cancel in $X$ because differentiation only moves cells between pools.
+Subtracting,
+\begin{equation}
+  \boxed{\;
+  \frac{\dd m}{\dd t}
+  = \underbrace{m(1-m)\Bigl[(\mu_M - \delta_M) - (\mu_E - \delta_E)\Bigr]}_{\text{selection: effectors out-grow memory}}
+  \;-\; \underbrace{k_{\mathrm{diff}}(t)\, m}_{\text{conversion}}
+  \;}
+  \label{eq:dm}
+\end{equation}
+Two mechanisms lower the share. \emph{Selection}: with \eqref{eq:mu} the bracket equals
+$-(\mu_{\max,E} - \mu_{\max,M})\,f + (\delta_E - \delta_M)$, negative whenever the culture is growing, so
+effectors out-grow memory cells. \emph{Conversion}: memory cells turn into effectors at a rate that rises
+with time. The selection term scales with $f$, so anything that slows growth (lag, a slow donor, lactate)
+also slows the loss of memory; the conversion term does not. Section~\ref{sec:obs} shows why this matters
+for patient~B.
+
+\subsection{Observables: \texttt{observables()}}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}X l@{}}
+\toprule
+Key & Definition & Who can see it \\
+\midrule
+\code{viable\_density} & $X = M + E$ & at-line cell counter (sparse) \\
+\code{viability} & $X / (X + X_d)$ & at-line cell counter \\
+\code{memory\_fraction} & $m = M / X$ & \textbf{hidden}: flow cytometry at harvest only \\
+\code{total\_viable\_cells} & $X \cdot V \cdot 10^3$ in $10^6$ cells (the dose) & derived \\
+\code{glucose}, \code{lactate} & $G$, $L$ & at-line metabolite analyser \\
+\code{pH} & equation \eqref{eq:hh} & optical patch, online \\
+\code{DO\_pct} & $100\,O / C^*_{\mathrm{air}}$ & optical patch, online \\
+\code{OUR} & equation \eqref{eq:our} & soft sensor \\
+\code{acid\_production} & $r_L$, equation \eqref{eq:rL} & soft sensor \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+% =====================================================================
+\section{Parameters and patients (\texttt{parameters.py})}
+Parameters are split into two frozen dataclasses. \code{PatientParams} holds what differs between
+patients; a future EnKF will learn these by augmenting them into its state. \code{ProcessParams} holds the
+cells' shared biology, the medium and the bag. \code{PARAM\_INFO} attaches a unit, a status and a source to
+each calibration-relevant parameter. The status is one of \textbf{anchor} (a published number the model
+must reproduce), \textbf{placeholder} (plausible, to be replaced by a fit to digitised literature data) or
+\textbf{assumed} (a modelling choice).
+
+\subsection{Patient parameters}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l c c c c X@{}}
+\toprule
+Code name & Symbol & Patient A & Patient B & Unit & Status / source \\
+\midrule
+\code{mu\_max\_M} & $\mu_{\max,M}$ & 0.0205 & 0.0172 & \si{\per\hour} & placeholder; Costariol 2019, Egan 2025 \\
+\code{mu\_max\_E} & $\mu_{\max,E}$ & 0.0306 & 0.0256 & \si{\per\hour} & placeholder; same \\
+\code{k\_diff0} & $k_{\mathrm{diff},0}$ & 0.0018 & 0.0018 & \si{\per\hour} & placeholder; fitted to memory anchors \\
+\code{activation} & $a$ & 0.5 & 0.25 & -- & assumed; SMART 2026 \\
+\code{seed\_density} & $X_0$ & 0.5 & 0.5 & \Mcell & -- \\
+\code{seed\_memory\_fraction} & $m_0$ & 0.45 & 0.45 & -- & placeholder; Cadinanos-Garai 2025 \\
+\code{seed\_viability} & $v_0$ & 0.95 & 0.85 & -- & -- \\
+\bottomrule
+\end{tabularx}
+\end{center}
+Patient~A is the fit donor. Patient~B is a slow donor: growth rates are scaled so its day-9 density is
+40\% below patient~A's, within the 30--50\% gap SMART (2026) reported for patient cells at day~12.
+
+\subsection{Process parameters}
+\begin{center}\small
+\begin{longtable}{@{}l l c l p{4.3cm}@{}}
+\toprule
+Group & Code name & Symbol & Value & Status / note \\
+\midrule
+\endhead
+growth & \code{lag\_tau\_h} & $\tau_{\mathrm{lag}}$ & \SI{24}{\hour} & activation lag \\
+ & \code{diff\_time\_scale\_h} & $T_d$ & \SI{210}{\hour} & placeholder \\
+ & \code{activation\_diff\_reduction} & $r_a$ & 0.5 & \\
+ & \code{k\_death\_M}, \code{k\_death\_E} & $\delta_M,\ \delta_E$ & 0.001, \SI{0.003}{\per\hour} & \\
+ & \code{K\_glc} & $K_G$ & \SI{0.5}{\mM} & Monod constant \\
+ & \code{K\_i\_lac} & $K_{iL}$ & \SI{40}{\mM} & lactate inhibition \\
+ & \code{pH\_opt\_low} & $\mathrm{pH}_{\mathrm{low}}$ & 6.95 & \\
+ & (hard-coded) & $K_{\mathrm{O_2}}$ & \SI{0.005}{\mM} & in \code{rates()} \\
+\addlinespace
+metabolism & \code{q\_glc\_M}, \code{q\_glc\_E} & $q_{G,M},\ q_{G,E}$ & 0.035, 0.060 & \si{pmol\per\cell\per\hour}; placeholder \\
+ & \code{Y\_lac\_glc} & $Y_{L/G}$ & 1.6 & mol/mol; Costariol 2019 \\
+ & \code{early\_lac\_boost} & $b$ & 1.0 & \\
+ & \code{early\_lac\_tau\_h} & $\tau_b$ & \SI{36}{\hour} & \\
+ & \code{q\_O2\_M}, \code{q\_O2\_E} & $q_{\mathrm{O_2},M},\ q_{\mathrm{O_2},E}$ & 0.030, 0.020 & \si{pmol\per\cell\per\hour}; SMART 2026 \\
+\addlinespace
+medium & \code{glc\_in}, \code{lac\_in} & $G_{\mathrm{in}},\ L_{\mathrm{in}}$ & 20, \SI{0}{\mM} & placeholder \\
+ & \code{hco3\_in} & $B_{\mathrm{in}}$ & \SI{24}{\mM} & assumed \\
+ & \code{acid\_to\_bicarb} & $\gamma$ & 0.4 & assumed; Egan 2025 pH traces \\
+\addlinespace
+bag & \code{volume\_L} & $V$ & \SI{1.0}{\litre} & \\
+ & \code{O2\_sat\_air} & $C^*_{\mathrm{air}}$ & \SI{0.19}{\mM} & at \SI{37}{\celsius} \\
+ & \code{kLa\_ref} & $\kla_{\mathrm{ref}}$ & \SI{2.0}{\per\hour} & placeholder; measure per bag \\
+ & \code{rock\_ref\_rpm}, \code{angle\_ref\_deg} & $n_{\mathrm{ref}},\ \theta_{\mathrm{ref}}$ & \SI{15}{\rpm}, \ang{6} & \\
+ & \code{kLa\_rpm\_exp}, \code{kLa\_angle\_exp} & $\alpha_n,\ \alpha_\theta$ & 0.8, 0.5 & \\
+ & \code{pCO2\_per\_frac} & $\kappa$ & \SI{713}{\mmHg} & \\
+ & \code{pKa\_bicarb} & $\mathrm{p}K_a$ & 6.1 & \\
+ & \code{CO2\_solubility} & $s$ & \SI{0.0307}{\mM\per\mmHg} & \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{Anchors}
+\code{MEMORY\_ANCHORS} $= \{5: 0.25,\ 10: 0.115\}$ is the stem-cell memory share of CAR$^+$ cells at
+days~5 and~10 across six healthy donors (Cadinanos-Garai et al., \emph{Molecular Therapy} 2025).
+$k_{\mathrm{diff},0}$, $T_d$, $\mu_{\max,M}$ and $\mu_{\max,E}$ were fitted so that patient~A meets both
+anchors and reaches about $20 \times 10^6$ cells/mL on day~9. The anchors are therefore met by
+construction: they are a calibration check, not a validation.
+
+% =====================================================================
+\section{What the model produces}
+A ten-day closed-loop run of each patient with the default controller and perfusion schedule, with no
+sensor noise (the controller sees the truth).
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=0.95\textwidth]{traj.png}
+  \caption{Patients A and B over ten days. Black diamonds: the literature memory anchors. pH and DO are
+  under closed-loop control (section~\ref{sec:control}).}
+  \label{fig:traj}
+  \vspace{8pt}
+  \includegraphics[width=0.95\textwidth]{inputs.png}
+  \caption{What the controller did: rock rate, O$_2$ and CO$_2$ fractions in the gas, and the perfusion
+  schedule. Rock rate sits at its \SI{6}{\rpm} minimum until DO falls to setpoint.}
+  \label{fig:inputs}
+\end{figure}
+
+\begin{center}\small
+\begin{tabular}{@{}c cc cc cc cc cc@{}}
+\toprule
+ & \multicolumn{2}{c}{$X$ [\Mcell]} & \multicolumn{2}{c}{$m$ [\%]} & \multicolumn{2}{c}{$G$ [\si{\mM}]}
+ & \multicolumn{2}{c}{$L$ [\si{\mM}]} & \multicolumn{2}{c}{DO [\%]} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}\cmidrule(lr){8-9}\cmidrule(lr){10-11}
+Day & A & B & A & B & A & B & A & B & A & B \\
+\midrule
+0  & 0.50 & 0.50 & 45.0 & 45.0 & 20.0 & 20.0 & 0.0 & 0.0 & 100 & 100 \\
+3  & 1.37 & 1.14 & 33.6 & 34.5 & 17.3 & 17.5 & 5.2 & 4.4 & 83 & 86 \\
+5  & 3.50 & 2.52 & 25.0 & 26.4 & 16.8 & 17.5 & 5.4 & 4.1 & 59 & 70 \\
+7  & 9.08 & 5.73 & 18.0 & 19.4 & 14.0 & 16.1 & 9.6 & 6.2 & 49 & 50 \\
+9  & 19.97 & 11.94 & 13.2 & 14.2 & 6.3 & 11.6 & 21.9 & 13.4 & 50 & 49 \\
+10 & 26.82 & 16.36 & 11.5 & 12.2 & 2.1 & 8.3 & 28.7 & 18.7 & 50 & 50 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+How to read the run:
+\begin{itemize}[nosep]
+  \item \textbf{Days 0--1.} Cells sit in the lag. Fresh medium under 5\% CO$_2$ starts at pH 7.44; the pH
+    loop raises CO$_2$ to about 8\% and brings pH to 7.20 within a few hours.
+  \item \textbf{Days 1--3.} Exponential growth starts, glucose falls and lactate rises, boosted by the
+    early burst $\beta(t)$.
+  \item \textbf{Days 3--5.} Perfusion ramps from 0 to \SI{1.5}{\VVD}. Fresh medium washes lactate out and
+    brings glucose back; the dip and bump in both curves are the ramp.
+  \item \textbf{Day 5.5 (A) / 6.4 (B).} Oxygen demand catches up with what the minimum rock rate supplies;
+    DO reaches its 50\% setpoint and the DO loop takes over, raising rock rate and, after day~8 for
+    patient~A, O$_2$.
+  \item \textbf{Days 9--10.} Patient~A runs short of glucose (\SI{2}{\mM} by day~10) even at
+    \SI{1.5}{\VVD}, and lactate approaches $K_{iL}$. The dose keeps growing while the memory share keeps
+    falling: the trade-off the project is about.
+\end{itemize}
+
+% =====================================================================
+\section{The inner control loop (day 2)}\label{sec:control}
+
+\subsection{The PI controller: \texttt{pid.py}}
+A positional PI controller with output limits and anti-windup by clamping. At each step $k$, with
+setpoint $r$, measurement $y_k$ and interval $\Delta t$:
+\begin{align}
+  e_k &= \sigma\,(r - y_k), \qquad \sigma = \begin{cases} +1 & \text{direct acting} \\ -1 & \text{reverse acting} \end{cases} \\
+  I_k &= I_{k-1} + K_p\,\frac{\Delta t}{T_i}\, e_k, \\
+  \tilde u_k &= u_{\mathrm{bias}} + K_p\, e_k + I_k, \\
+  u_k &= \min\bigl(\max(\tilde u_k,\ u_{\min}),\ u_{\max}\bigr), \\
+  I_k &\leftarrow I_k - (\tilde u_k - u_k).
+\end{align}
+The last line pulls the integral back to exactly where the output just reaches its limit, so a saturated
+loop recovers immediately once the error changes sign.
+
+\subsection{The rocker controller: \texttt{rocker.py}}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l l l X@{}}
+\toprule
+Loop & Manipulated & Tuning & Notes \\
+\midrule
+pH (setpoint 7.20) & $y_{\mathrm{CO_2}} \in [0.01, 0.10]$ & $K_p = 0.04$, $T_i = \SI{0.25}{\hour}$, bias 0.05 &
+reverse acting: more CO$_2$ lowers pH. No base addition is modelled. \\
+DO (setpoint 50\%) & $u_{\mathrm{DO}} \in [0, 100]$ & $K_p = 1.5$, $T_i = \SI{1}{\hour}$, bias 20 &
+split range onto rock rate and O$_2$, see \eqref{eq:split}. \\
+Perfusion & $V\!V\!D \in [0, 2]$ & schedule & see \eqref{eq:perf}. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The DO output is split so that the rocker rocks harder first (gentler on T cells) and only then enriches
+the gas with oxygen:
+\begin{equation}
+  (n,\ y_{\mathrm{O_2}}) =
+  \begin{cases}
+    \Bigl(n_{\min} + (n_{\max} - n_{\min})\,\dfrac{u_{\mathrm{DO}}}{50},\;\; 0.21\Bigr), & u_{\mathrm{DO}} \le 50, \\[10pt]
+    \Bigl(n_{\max},\;\; 0.21 + (0.60 - 0.21)\,\dfrac{u_{\mathrm{DO}} - 50}{50}\Bigr), & u_{\mathrm{DO}} > 50,
+  \end{cases}
+  \label{eq:split}
+\end{equation}
+with $n_{\min} = \SI{6}{\rpm}$ and $n_{\max} = \SI{25}{\rpm}$.
+Perfusion follows a schedule in culture days $t_d = t/24$:
+\begin{equation}
+  V\!V\!D(t_d) =
+  \begin{cases}
+    0, & t_d < 3, \\
+    1.5\,\min\!\left(1,\ \dfrac{t_d - 3}{2}\right), & t_d \ge 3.
+  \end{cases}
+  \label{eq:perf}
+\end{equation}
+
+\textbf{Hard limits} (\code{Limits}): rock rate \SIrange{6}{25}{\rpm}, O$_2$ 21--60\%, CO$_2$ 1--10\%,
+perfusion \SIrange{0}{2}{\VVD}, pH setpoint 6.9--7.4, DO setpoint 20--80\%. A supervisory layer (later,
+the digital twin and the operator) can call \code{set\_setpoints()}, but the values are clipped to these
+limits inside the rocker, so no higher layer can push the bag outside them.
+
+DO can only be raised, not lowered: there is no nitrogen. While the culture is young, the quasi-steady
+oxygen balance from \eqref{eq:dO},
+\begin{equation}
+  O_{\mathrm{ss}} = C^* - \frac{\mathrm{OUR}}{\kla(n_{\min})},
+\end{equation}
+lies above setpoint, so DO stays high with the rocker at its minimum and the DO loop saturated at zero.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\textwidth]{step_response.png}
+  \caption{Step response (\code{scripts/step\_response.py}): on day~7 the supervisory layer moves pH from
+  7.20 to 7.10 and DO from 50\% to 40\%. Both settle within a few hours without overshoot; the slow drift
+  in CO$_2$ and rock rate afterwards follows the growing culture.}
+  \label{fig:step}
+\end{figure}
+
+% =====================================================================
+\section{The batch runner and the clock}
+
+\subsection{\texttt{Batch} (\texttt{runner.py})}
+\code{Batch} owns the state vector, the current inputs, the controller, optional sensors and the recorded
+history. One call to \code{step()}:
+\begin{enumerate}[nosep]
+  \item computes the true observables at $t_k$;
+  \item if sensors are attached, reads them; the controller then sees the readings $\hat y_k$, otherwise
+    the truth $y_k$;
+  \item asks the controller for new inputs $u_k = \mathcal{C}(\hat y_k)$;
+  \item integrates $\dot x = F(t, x, u_k)$ from $t_k$ to $t_{k+1} = t_k + \Delta t$ with
+    $\Delta t = \SI{5}{\minute}$, using scipy's LSODA ($\mathrm{rtol} = 10^{-6}$, $\mathrm{atol} = 10^{-9}$),
+    and clips the result at zero;
+  \item records a row with time, raw states, all observables, inputs, setpoints, sampling totals and the
+    latest sensor readings.
+\end{enumerate}
+\code{run(days)} repeats this; \code{run\_batch(patient, days)} is the one-line version.
+\code{series(key)}, \code{at\_day(day)} and \code{to\_csv(path)} read the history back.
+
+\textbf{Sampling.} \code{take\_sample(volume\_mL)} models a closed sample through the syringe port. It
+returns the true state of the drawn liquid; then the scale-controlled feed refills the bag with fresh
+medium. With $\phi = \min(V_s / V,\ 0.5)$:
+\begin{equation}
+  (M, E, X_d) \leftarrow (1-\phi)\,(M, E, X_d), \qquad
+  c \leftarrow c + \phi\,(c_{\mathrm{in}} - c) \quad \text{for } c \in \{G, L, B\},
+\end{equation}
+and $O$ is unchanged. The cells removed, $X\,V_s$, are added to \code{cells\_sampled}, because every
+sample is taken from the patient's dose.
+
+\subsection{\texttt{SimClock} (\texttt{clock.py})}
+Maps wall-clock time to simulated time at \code{speed\_h\_per\_s} simulated hours per second (default~1:
+a nine-day run takes 3.6~minutes), with pause and resume. Nothing uses it yet; it is for the live devices
+and dashboard in later steps.
+
+% =====================================================================
+\section{The sensor layer (day 3)}
+The model knows the true state; a real platform does not. The sensor layer reproduces how each quantity
+reaches the platform: how often, how noisy, how delayed and how it fails. All values are placeholders
+typical of single-use rocking-bag systems.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l X l l l l@{}}
+\toprule
+Signal & Source & Update & Noise & Drift & Delay \\
+\midrule
+pH & optical patch & \SI{10}{\second} & 0.01 (res.\ 0.01) & $-0.005$/day & none \\
+DO \% & optical patch & \SI{10}{\second} & 1 (res.\ 0.1) & $+0.5$/day & none \\
+bag weight & load cell & \SI{1}{\second} & \SI{2}{\gram} & none & none \\
+$X$, viability & at-line counter, \SI{2}{\milli\litre} sample & on request & 8\% CV; 0.02 & none & \SI{15}{\minute} \\
+$G$, $L$ & metabolite analyser & on request & 3\%, 4\% CV & none & \SI{30}{\minute} \\
+$m$ & flow cytometry at harvest & once & 0.02 & none & \SI{12}{\hour} \\
+OUR & soft sensor & each step & from $\kla$ error & from DO & \SI{30}{\minute} window \\
+acid prod. & soft sensor & each step & large & from pH & \SI{6}{\hour} window \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Online sensors: \texttt{online.py}}
+For a channel with noise $\sigma$, drift rate $\rho$ per day, resolution $\Delta$ and update period
+$T_s$, a new raw value at time $t$ is
+\begin{equation}
+  \hat y(t) = \Delta \cdot \operatorname{round}\!\left(\frac{y(t) + \rho\,t/24 + \varepsilon + \phi_f(t)}{\Delta}\right),
+  \qquad \varepsilon \sim \mathcal{N}(0, \sigma^2),
+\end{equation}
+held until the next update $t + T_s$; each reading also reports its age. The fault term $\phi_f$ is zero
+unless a fault is injected from a start time $t_f$: \textbf{bias} ($\phi_f = c$), \textbf{drift}
+($\phi_f = c\,(t - t_f)/24$), \textbf{stale} (value frozen) or \textbf{dropout} (no value, as after a lost
+connection). Faults will be used by the watchdog on day~9.
+
+\begin{note}[title={A drifting sensor moves the real process}]
+The controller holds the \emph{reading} at setpoint: $\hat{\mathrm{pH}} \approx 7.20$. With
+$\rho = -0.005$/day, the true pH therefore settles at $7.20 + 0.005\,t_d$, about $+0.045$ by day~9 (top
+left of figure~\ref{fig:sensors}; tested by \code{test\_controller\_follows\_the\_drifting\_sensor}). The
+DO patch drifts the other way, so true DO ends a few percent below setpoint.
+\end{note}
+
+\subsection{At-line analysers and flow cytometry: \texttt{atline.py}}
+\code{AtLineLab.submit()} takes the truth of a drawn sample and queues one result per instrument with
+\begin{equation}
+  \hat c = \max\bigl(0,\ c\,(1 + \varepsilon)\bigr),\ \ \varepsilon \sim \mathcal{N}(0, \mathrm{CV}^2)
+  \quad\text{(counts, concentrations)},
+  \qquad
+  \hat v = \operatorname{clip}_{[0,1]}(v + \varepsilon)
+  \quad\text{(viability)},
+\end{equation}
+ready at $t_{\mathrm{drawn}} + t_{\mathrm{turnaround}}$. \code{poll(now)} releases the results that have
+become ready. \code{FlowCytometry.measure()} returns $\hat m = \operatorname{clip}_{[0,1]}(m + \varepsilon)$
+with $\sigma = 0.02$, ready \SI{12}{\hour} later: the delayed, expensive label the whole project is about.
+
+\subsection{Soft sensors: \texttt{soft.py}}
+Two rates the EnKF will use between at-line samples, computed from what the platform logs. Both use causal
+trailing windows of length $w$, as they would run live: $\overline{(\cdot)}_w$ is the moving mean and
+$\mathcal{S}_w(\cdot)$ the least-squares slope over $[t - w, t]$, reported only once the window holds at
+least 80\% of $w$ and three points.
+
+\subsubsection{Oxygen uptake rate ($w = \SI{0.5}{\hour}$)}
+Rearranging \eqref{eq:dO} for OUR and replacing true values with measured ones:
+\begin{equation}
+  \widehat{\mathrm{OUR}}(t) = \overline{\bigl[\, \beta_k\, \kla(n, \theta)\, (C^* - \hat C) \,\bigr]}_w
+  - \mathcal{S}_w(\hat C),
+  \qquad \hat C = \frac{\widehat{\mathrm{DO}}}{100}\, C^*_{\mathrm{air}},
+\end{equation}
+where $\beta_k$ (\code{kla\_bias}) is a multiplicative error of the $\kla$ correlation for this particular
+bag ($\beta_k = 1$ by default). OUR is proportional to cell number weighted by phenotype, so it is the best
+continuous proxy for growth.
+
+\subsubsection{Acid production ($w = \SI{6}{\hour}$)}
+Inverting Henderson--Hasselbalch \eqref{eq:hh} gives bicarbonate from the pH reading and the gas:
+\begin{equation}
+  \hat B = 10^{\,\widehat{\mathrm{pH}} - \mathrm{p}K_a}\; s\,\kappa\, y_{\mathrm{CO_2}}.
+\end{equation}
+Rearranging \eqref{eq:dB} for $r_L$:
+\begin{equation}
+  \hat r_L(t) = -\frac{1}{\gamma}\Bigl[\, \mathcal{S}_w(\hat B) - \overline{D\,(B_{\mathrm{in}} - \hat B)}_w \,\Bigr].
+\end{equation}
+The window is long because pH has a resolution of 0.01: one quantisation step in pH is a 2.3\% step in
+$\hat B$, which swamps the slope over short windows.
+
+\begin{figure}[p]
+  \centering
+  \includegraphics[width=\textwidth]{sensors.png}
+  \caption{What the platform sees for patient~A (\code{scripts/sensor\_demo.py}): online patches against
+  the truth, eight daily at-line samples plotted at their ready times, the two soft sensors, and flow
+  cytometry at harvest. The eight \SI{2}{\milli\litre} samples removed $86 \times 10^6$ cells.}
+  \label{fig:sensors}
+\end{figure}
+
+% =====================================================================
+\section{Tests and calibration status}
+\begin{center}\small
+\begin{longtable}{@{}l l p{6.4cm}@{}}
+\toprule
+File & Test & What it checks \\
+\midrule
+\endhead
+\code{test\_process} & \code{states\_stay\_physical} & no negative states, viability $\le 1$ \\
+ & \code{memory\_share\_passes\_literature\_anchors} & patient A within $\pm 0.03$ of 25\% (day 5) and 11.5\% (day 10) \\
+ & \code{dose\_rises\_while\_memory\_falls} & dose up and $m$ down from day 3 to 9 \\
+ & \code{slow\_donor\_has\_30\_to\_50\_percent\_fewer\_cells} & $X_B/X_A$ at day 9 in $[0.5, 0.7]$ \\
+ & \code{inner\_loop\_holds\_pH\_and\_DO} & after DO first reaches setpoint: $|\mathrm{pH} - 7.2| < 0.05$, $|\mathrm{DO} - 50| < 5$ \\
+\addlinespace
+\code{test\_control} & \code{pi\_holds\_first\_order\_setpoint} & PI tracks a first-order plant \\
+ & \code{pi\_anti\_windup\_recovers\_quickly} & clamping prevents windup \\
+ & \code{perfusion\_schedule\_ramps} & schedule \eqref{eq:perf} \\
+ & \code{supervisory\_setpoints\_are\_clipped} & \code{set\_setpoints} respects hard limits \\
+\addlinespace
+\code{test\_sensors} & \code{online\_noise\_and\_drift} & noise level and drift sign \\
+ & \code{reading\_is\_held\_between\_updates} & sample-and-hold at $T_s$ \\
+ & \code{faults\_dropout\_and\_stale} & dropout gives no value; stale freezes \\
+ & \code{atline\_results\_arrive\_after\_turnaround} & results released only after turnaround \\
+ & \code{sampling\_costs\_cells} & sampling dilutes the bag and counts cells removed \\
+ & \code{flow\_cytometry\_is\_delayed} & flow result ready \SI{12}{\hour} after drawing \\
+ & \code{controller\_follows\_the\_drifting\_sensor} & true pH rises as the patch drifts down \\
+ & \code{soft\_oxygen\_uptake\_tracks\_truth} & $\widehat{\mathrm{OUR}}$ close to the true OUR \\
+\addlinespace
+\code{test\_clock} & \code{clock\_runs\_pauses\_and\_jumps} & speed, pause and resume \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\textbf{Calibration} (\code{docs/calibration.md}). The two memory anchors and the slow-donor gap are met.
+To digitise next: growth curves (Costariol 2019, Egan 2025) for $\mu_{\max}$ and $\tau_{\mathrm{lag}}$;
+specific glucose, lactate and oxygen rates (Costariol 2019, SMART 2026); the early-lactate correlation for
+$a$ and $b$; the day-0 phenotype $m_0$ (Cadinanos-Garai 2025); the buffer share $\gamma$ from Egan 2025 pH
+traces; and $\kla_{\mathrm{ref}}$ for the bag. Digitised series go under
+\code{data/literature/<paper>/<figure>.csv}.
+
+% =====================================================================
+\section{Observations, limitations and open points}\label{sec:obs}
+Points noticed while writing this document. None breaks a test; they are worth knowing before the EnKF
+and calibration steps.
+
+\begin{enumerate}[leftmargin=*]
+  \item \textbf{Patient~B ends with a slightly higher memory share than A} (12.2\% versus 11.5\% at day~10),
+    although B has the weaker activation, which by the hypothesis should mean less memory. Equation
+    \eqref{eq:dm} explains it. B's conversion term is larger by
+    \[
+      \frac{1 - 0.5 \times 0.25}{1 - 0.5 \times 0.5} = \frac{0.875}{0.75} \approx 1.17,
+    \]
+    but B's selection term is smaller, because
+    $\mu_{\max,E} - \mu_{\max,M}$ is $0.0084$ for B against $0.0101$ for A and B's $f$ is lower. Selection
+    wins. If the intended story is ``weaker activation, less memory'', either $r_a$ must be larger or the
+    growth gap smaller. Either way, an estimator will have to separate growth speed from activation, which
+    is exactly the hard part.
+  \item \textbf{DO is uncontrolled for the first 5--6 days.} With no N$_2$ and a \SI{6}{\rpm} floor, DO
+    stays between 100\% and 50\%. Realistic for a young culture, but early DO and OUR are then governed by
+    $\kla(n_{\min})$, a placeholder.
+  \item \textbf{$K_{\mathrm{O_2}} = \SI{0.005}{\mM}$ is hard-coded} in \code{rates()} rather than in
+    \code{ProcessParams}, unlike every other constant.
+  \item \textbf{pH acts only on growth}, not on metabolism or differentiation, and the pH loop can only add
+    acid (CO$_2$), not base. If lactate overwhelms the buffer late in a dense run, the controller's only
+    remedy is lowering CO$_2$ to 1\%.
+  \item \textbf{Metabolism is not coupled to growth.} $q_G$ and OUR depend on cell number and phenotype but
+    not on $f_{\mathrm{lag}}$, $f_{\mathrm{pH}}$ or $f_L$: cells in lag consume at full rate.
+  \item \textbf{Dead cells are retained and never lyse}, and the volume is constant apart from sampling, so
+    viability only falls slowly and there is no late-run viability crash.
+  \item \textbf{The anchors are met by construction}: four parameters fitted to two points plus a density.
+    They confirm the fit, not the model structure.
+  \item \textbf{\code{acid\_production} is the lactate production rate $r_L$}, not the bicarbonate
+    consumption $\gamma r_L$. The soft sensor divides by $\gamma$ to match; keep this in mind when
+    comparing with literature acid rates.
+\end{enumerate}
+
+% =====================================================================
+\section{What comes next}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}c p{4.6cm} X@{}}
+\toprule
+Day & Step & How it uses what exists \\
+\midrule
+4 & Rocker as an OPC UA server & exposes pH, DO, weight, rock rate, gas and pressure as industrial tags \\
+5 & Analyser as a REST API, data collector & wraps \code{AtLineLab}; a collector pulls both devices \\
+6 & EnKF soft sensor, sampling by information gain & \eqref{eq:ode} as the forecast model; OUR and acid
+  production as continuous data, at-line results as sparse data; patient parameters augmented into the state \\
+7 & Run state machine and scheduler & orchestrates sampling and phases \\
+8 & Harvest recommendations, first dashboard pages & advisory decisions an operator approves; setpoints pass
+  through the rocker's limits \\
+9 & Faults, watchdog, audit log & uses the fault injection in \code{online.py}; SQLite historian \\
+10 & Patient B page, Bayesian optimisation & campaign loop across process-development runs \\
+11--12 & Validation, packaging, rehearsal & \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}
