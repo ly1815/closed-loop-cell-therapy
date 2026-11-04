@@ -42,8 +42,8 @@ def test_bands_contain_the_estimate_and_narrow_with_more_data(run2):
     assert widths[1] < widths[0]
 
 
-def test_harvest_time_is_where_forecast_crosses_threshold(run2):
+def test_threshold_time_is_where_forecast_crosses_threshold(run2):
     r, v, data = run2
     f = fit_realtime(r, data, v.X_I_count, r.t_sed + 2.5)
-    tT = f.harvest_time(10.0)
+    tT = f.threshold_time(10.0)
     assert float(f.predict_X(tT)) == pytest.approx(10.0, rel=1e-6)

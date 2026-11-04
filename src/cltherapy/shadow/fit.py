@@ -1,15 +1,17 @@
-"""The digital shadow of Egan et al. (2025): fit the FACER model to online data, then predict.
+"""Digital shadow of cell growth (Egan et al., 2025): model fitting to online data, then prediction.
 
-The shadow sees only what the platform logs (perfusion rate, filtered glucose and lactate) plus
-the offline count at seeding. It simulates the whole controlled process, PI controller included,
+The digital shadow uses the online data of the perfusion rate D(t) and the glucose and lactate
+concentrations [S(t)] and [P(t)], plus the off-line initial cell concentration [X_I]. It simulates the whole controlled process, PI controller included,
 and fits it to all three online signals at once, with equal weights and no scaling (section 2.3).
 
 Two modes, as in the paper:
 
-- training (section 3.2): a complete historical run, with the final count known. Fit Y_xs, Y_px,
-  t_lag and nu; mu_max follows from eq. 12.
-- real time (section 3.3): only the data so far. t_lag and Y_xs are fixed at their training means
-  (the real-time model is otherwise not identifiable, Table S1); fit Y_px, mu_max and nu.
+- digital shadow training (section 3.2): all off-line and online data of a run, so that [X_F] is
+  known; fitted parameters Y_xs, Y_px, t_lag and nu, with mu_max given by eq. 12.
+- digital shadow testing (section 3.3): only [X_I] and the online data available at the time of
+  model fitting; t_lag and Y_xs fixed at their mean training values (Table S1: the real-time
+  model is structurally identifiable only if mu_max or t_lag is known a priori), and Y_px,
+  mu_max and nu fitted.
 
 Least squares by scipy (trust-region reflective, which handles the bounds; the paper used
 Levenberg-Marquardt via lmfit). The model is evaluated on a 60 s grid rather than 10 s to keep
@@ -78,8 +80,8 @@ class ShadowFit:
         p = self.params
         return specific_growth_rate(t, p["t_lag"], p["mu_max"], p["nu"])
 
-    def harvest_time(self, X_T: float) -> float:
-        """Predicted time at which the cell concentration reaches X_T (eq. 13)."""
+    def threshold_time(self, X_T: float) -> float:
+        """Predicted time t_T at which [X] reaches the threshold [X_T] (eq. 13)."""
         p = self.params
         return float(time_to_threshold(self.X_I, X_T, p["t_lag"], p["mu_max"], p["nu"]))
 

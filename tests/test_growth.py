@@ -10,7 +10,7 @@ from cltherapy.process.growth import (
     time_to_threshold,
 )
 from cltherapy.process.parameters import (
-    DOSE_THRESHOLD,
+    X_T,
     PUBLISHED_EXPANSION_TO_1E7,
     PUBLISHED_MU_MAX,
     RUNS,
@@ -50,7 +50,7 @@ def test_growth_rate_is_derivative_of_log_concentration():
 def test_mu_max_and_expansion_period_match_table_2(n):
     r = RUNS[n]
     assert r.mu_max == pytest.approx(PUBLISHED_MU_MAX[n], abs=0.015)
-    tT = time_to_threshold(r.X_I, DOSE_THRESHOLD, r.t_lag, r.mu_max, r.nu) - r.t_I
+    tT = time_to_threshold(r.X_I, X_T, r.t_lag, r.mu_max, r.nu) - r.t_I
     assert tT == pytest.approx(PUBLISHED_EXPANSION_TO_1E7[n], abs=0.04)
 
 

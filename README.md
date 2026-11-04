@@ -7,29 +7,29 @@ A virtual CAR-T expansion in a glucose-controlled perfusion bioreactor, built en
 > Biotechnology Progress 2025;41(6):e70045. [doi:10.1002/btpr.70045](https://doi.org/10.1002/btpr.70045)
 > (open access, CC BY 4.0)
 
-The process is the Aglaris FACER: T cells sediment onto a gas-permeable membrane in a
-134 mL chamber, then fresh medium is perfused at a rate set by a PID controller that holds glucose
-at a set point. Cell concentration cannot be measured during the run without resuspending the
-cells, so the only online signals are the perfusion rate, glucose, lactate and dissolved oxygen.
-The digital shadow fits a mechanistic model to those signals and forecasts the cell concentration,
-and with it the time the batch reaches the required dose.
+The repository re-implements the digital shadow of cell growth in a PID controlled perfusion
+bioreactor, the Aglaris FACER, in which cell retention is via sedimentation and the PID controller
+maintains the glucose concentration [S(t)] at its set-point [S_sp] by adjusting the perfusion rate
+D(t). The digital shadow is fitted to online data of D(t), [S(t)] and [P(t)] and the off-line initial
+cell concentration [X_I], and provides nowcasts and short-term forecasts of the cell concentration
+[X(t)], and hence of the time t_T at which a threshold cell concentration [X_T] is reached.
 
-Everything runs offline on synthetic data generated from the published parameters of the six
-FACER runs (Tables 1, 2 and S4 of the paper). The paper's raw data are proprietary.
+Since the original datasets are proprietary, a virtual bioreactor generates online and off-line data
+for the six bioreactor runs from the published observed and best-fit parameters (Tables 1, 2 and S4).
 
 ## What is in the repository
 
 | Layer | Module | Source in Egan et al. |
 | --- | --- | --- |
-| Growth model: Richards special case with a lag | `process/growth.py` | eqs 10-13, S60-S70 |
-| The six published runs, with sources | `process/parameters.py` | Tables 1, 2, S4 |
-| Mass balances, forward Euler at 10 s | `process/facer.py` | eqs 2-8, S19-S24 |
-| Glucose PID setting the perfusion rate | `control/perfusion.py` | eqs 2, S12, S13, S23 |
-| Enzymatic sensors, bubbles, Butterworth filter, offline counts | `sensors/online.py` | section 2.2 |
-| Virtual FACER run, with the run 3 pump stop | `sim/runner.py` | sections 2.2, 3.1 |
-| Digital shadow: training and real-time fits, bands, harvest time | `shadow/fit.py` | sections 2.3, 3.2, 3.3; S71, S72 |
+| Cell growth model: special case of the Richards growth model with a lag period | `process/growth.py` | eqs 10-13, S60-S70 |
+| Observed and best-fit parameters of the six bioreactor runs | `process/parameters.py` | Tables 1, 2, S4 |
+| Batch-perfusion process model, forward Euler method, 10 s step | `process/facer.py` | eqs 2-8, S19-S24 |
+| PID control of the perfusion rate | `control/perfusion.py` | eqs 2, S12, S13, S23 |
+| Enzymatic sensors, bubble artefacts, Butterworth filter, off-line cell counts | `sensors/online.py` | section 2.2 |
+| Virtual bioreactor run, including the mechanical issue of run 3 | `sim/runner.py` | sections 2.2, 3.1 |
+| Digital shadow training and testing, confidence bands, t_T | `shadow/fit.py` | sections 2.3, 3.2, 3.3; S71, S72 |
 | Accelerated clock for live runs | `sim/clock.py` | |
-| Generic PI with anti-windup (control notes example) | `control/pid.py` | |
+| Generic PI controller with anti-windup (control refresher notes) | `control/pid.py` | |
 
 ## Quick start
 
@@ -42,24 +42,28 @@ python scripts/simulate_run.py all
 python scripts/realtime_test.py      # outputs/realtime_test.png, cf. Figures 5 and 6
 ```
 
-## What the virtual runs reproduce
+## Results
 
-- Final cell concentrations of all six runs, and Table 2's maximum growth rates and expansion
-  periods to 1e7 cells/mL (tests in `tests/test_growth.py`, `tests/test_facer.py`).
-- Glucose held at its set point and lactate settling at Y_ps (S_I - S_sp), eq. 18.
-- Bubble artefacts: downward glucose and lactate spikes and upward perfusion spikes after filtering.
-- Run 3's half-day pump stop 2.5 days into perfusion, with the online data lost.
-- The real-time shadow with 2.5 days of data predicting the final concentration within 30% for
-  every run, mean absolute error about 8% here against 13% in the paper (`scripts/realtime_test.py`).
-- Confidence bands that are too narrow, as the paper found: they ignore the uncertainty in the
-  fixed Y_xs and t_lag.
+- The final cell concentrations [X_F] of all six runs, and the maximum specific growth rates mu_max
+  and required expansion periods t_T - t_I for [X_T] = 10^7 cells/mL of Table 2, are reproduced
+  (`tests/test_growth.py`, `tests/test_facer.py`).
+- The glucose concentration remains at its set-point and the lactate concentration approximately
+  stabilises at the steady state [P_ss] = Y_ps ([S_I] - [S_sp]) (eq. 18).
+- Bubble artefacts not removed by the filter give downward spikes of the glucose and lactate
+  concentrations followed by upward spikes in the perfusion rate.
+- The mechanical issue of run 3 (no perfusion and no online data for approximately 0.5 days,
+  2.5 days after the start of perfusion) is reproduced.
+- Digital shadow testing: with 2.5 days of online data, [X_F] is predicted within a 30% relative
+  error for all runs, with a mean relative error of 8% (Egan et al.: 13%) (`scripts/realtime_test.py`).
+- As in the original study, the confidence bands are too narrow, since the uncertainty in the fixed
+  parameters Y_xs and t_lag is not captured.
 
 ## Documentation
 
-- [docs/model.md](docs/model.md): equations, parameters and where each number comes from
-- [docs/sensors.md](docs/sensors.md): what the platform measures, how often, and how well
-- [docs/architecture.md](docs/architecture.md): devices, protocols and the loops
-- [docs/technical_documentation/](docs/technical_documentation/): full LaTeX write-up (PDF included)
+- [docs/model.md](docs/model.md): mathematical model, parameters and their sources
+- [docs/sensors.md](docs/sensors.md): online and off-line data
+- [docs/architecture.md](docs/architecture.md): system architecture
+- [docs/technical_documentation/](docs/technical_documentation/): technical documentation (LaTeX source and PDF)
 - [docs/control_refresher/](docs/control_refresher/): control theory refresher notes
 
 The paper and its supporting information go in `Egan/` locally (ignored by git).
@@ -68,14 +72,14 @@ The paper and its supporting information go in `Egan/` locally (ignored by git).
 
 | Day | Step | State |
 | --- | --- | --- |
-| 1-3 | FACER model, glucose PID, sensors and filtering, virtual runs, digital shadow | done |
-| 4 | Virtual FACER as an OPC UA server (D, S, P, DO, set point) | next |
-| 5 | Offline counter as a REST API, data collector | |
-| 6 | EnKF version of the shadow, sampling Y_xs and t_lag (the paper's suggested improvement) | |
-| 7 | Run state machine: seed, sediment, perfuse, harvest | |
-| 8 | Harvest-time recommendations, first dashboard pages | |
-| 9 | Faults (pump stop, sensor bubbles, drift), watchdog, audit log | |
-| 10 | PID tuning with the shadow; Bayesian optimisation across runs | |
+| 1-3 | Batch-perfusion process model, PID control, online and off-line data, virtual bioreactor runs, digital shadow | done |
+| 4 | Virtual bioreactor as an OPC UA server (D(t), [S(t)], [P(t)], C'(t), [S_sp]) | next |
+| 5 | Off-line cell counter as a REST API, data collection | |
+| 6 | Ensemble Kalman filter digital shadow with uncertain Y_xs and t_lag | |
+| 7 | Run state machine: seeding, sedimentation period, perfusion period, harvest | |
+| 8 | Decision support for the harvest time, dashboard | |
+| 9 | Process disturbances, data validation, audit trail | |
+| 10 | PID tuning via the digital shadow; Bayesian optimisation across bioreactor runs | |
 | 11 | Validation page, packaging, backup video | |
 | 12 | Rehearsal | |
 

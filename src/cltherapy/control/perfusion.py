@@ -1,9 +1,9 @@
-"""The FACER's glucose controller: a PID that sets the perfusion rate.
+"""PID control of the perfusion rate, with the glucose concentration as the process variable.
 
-Velocity form of Egan et al. (2025) eq. S12/S13, discretised as in S23, acting on the
-*filtered measured* glucose (the real controller never sees the true value):
+Velocity form of eqs S12 and S13 of Egan et al. (2025), discretised as in eq. S23, acting on
+the filtered online glucose data rather than the true [S(t)]:
 
-    e_k   = S_sp - S_meas,k
+    e_k   = [S_sp] - [S_meas](t_k)
     D_k+1 = max(D_min, D_k + K_p (e_k+1 - e_k) + K_i dt e_k + K_d (e_k+1 - 2 e_k + e_k-1) / dt)
 
 With K_d = 0 this is exactly S23. The derivative gain is 3-4 orders of magnitude below K_p and

@@ -1,4 +1,4 @@
-"""Sensors of the FACER: enzymatic glucose and lactate with bubbles and filtering, DO, offline counts."""
+"""Online and off-line data: enzymatic glucose and lactate sensors with bubble artefacts and Butterworth filter, DO sensor, off-line cell counts."""
 
 from .online import BubbleModel, CausalButterworth, OfflineCounts, OnlineSensors
 

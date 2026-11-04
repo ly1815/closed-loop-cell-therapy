@@ -1,17 +1,16 @@
-"""Mass balances of the FACER large chamber, solved the way Egan et al. (2025) solve them.
+"""Batch-perfusion process in the large chamber of the FACER, after Egan et al. (2025).
 
-Sedimentation then perfusion (eqs 2-4, 8; S1-S11, S18-S24):
+Sedimentation period (t_I <= t <= t_sed) followed by the perfusion period (eqs 2-4, 8; S1-S24):
 
-    dS/dt = H(t - t_sed) D (S_I - S) - mu X / Y_xs
-    dP/dt = Y_px mu X - H(t - t_sed) D P
-    dD/dt = H(t - t_sed) [ -K_p dS/dt + K_i (S_sp - S) ],   D >= D_min during perfusion
-    dC'/dt = (H(t - t_sed) D + kLa)(1 - C') - mu X / Y'_xc   (normalised DO, extended model)
+    d[S]/dt = H(t - t_sed) D(t) ([S_I] - [S(t)]) - mu(t)[X(t)] / Y_xs           (eq. 3)
+    d[P]/dt = Y_px mu(t)[X(t)] - H(t - t_sed) D(t) [P(t)]                        (eq. 4)
+    dD/dt   = H(t - t_sed) ( -K_p d[S]/dt + K_i ([S_sp] - [S(t)]) ),  D >= D_min (eq. 2)
+    dC'/dt  = (H(t - t_sed) D(t) + kLa)(1 - C'(t)) - mu(t)[X(t)] / Y'_xc          (eq. 8)
 
-X(t) and mu(t) come from the analytical growth model (growth.py). The ODEs are discretised by
-forward Euler with a 10 s step and every state is clipped at its physical bound at each step
-(S22-S24), because solve_ivp let the perfusion rate go negative in the paper's experience.
-This is the model the digital shadow fits; the virtual bioreactor in sim/ wraps the same
-balances with sensors, filtering and a controller that acts on measurements.
+where C' = [C]/[C*] is the normalised DO. [X(t)] and mu(t) are given analytically (growth.py).
+The ODEs are approximated by forward finite difference equations and solved via the forward
+Euler method with a step size of 10 s, with the 'max' function enforcing the physical
+constraints at each time step (S22-S24). This is the model fitted by the digital shadow.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ class Trajectory:
     S: np.ndarray
     P: np.ndarray
     D: np.ndarray
-    C: np.ndarray  # normalised DO, C/C*
+    C: np.ndarray  # normalised DO, C'(t) = [C(t)]/[C*]
 
     def at(self, t: float) -> dict:
         i = int(np.clip(np.searchsorted(self.t, t), 0, len(self.t) - 1))

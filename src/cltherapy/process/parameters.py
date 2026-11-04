@@ -5,13 +5,14 @@ Sources (Egan et al., Biotechnology Progress 2025, doi:10.1002/btpr.70045):
 - Table 2: best-fit growth and yield parameters for the five training runs
 - Table S4: kLa and the scaled oxygen yield from the extended model fitted to DO data
 
-Units: time in days from the start of data collection, cell concentration in 1e6 cells/mL,
-glucose and lactate in mmol/L, Y_xs in cells/pmol, Y_px in pmol/cell, kLa in 1/day,
-Y'_xc in 1e6 cells/mL. With these units mu*X/Y_xs and Y_px*mu*X come out in mmol/L/day.
+Units as in Tables 1 and 2: time in days relative to the start of the process (t = 0), [X] in
+10^6 cells/mL, [S] and [P] in mmol/L, Y_xs in cells/pmol, Y_px in pmol/cell, kLa in day^-1 and
+Y'_xc in 10^6 cells/mL; mu[X]/Y_xs and Y_px mu[X] are then in mmol/L/day. Field names map onto
+the paper's notation: X_I = [X_I], S_sp = [S_sp], lag = t_lag - t_I, Y_xc = Y'_xc, and so on.
 
-Run 3 was never fitted in the paper (a mechanical stop 2.5 days into perfusion). Its growth
-parameters here are the training means, with mu_max set by eq. 12 so the run ends at the
-published final concentration: a derived run, flagged as such.
+Run 3 is the independent test dataset of the paper (a mechanical issue 2.5 days after the start
+of perfusion) and has no best-fit parameters. Here it takes the mean training values, with
+mu_max from eq. 12 so that [X(t_F)] equals the published [X_F]: a derived run, flagged as such.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ LARGE_CHAMBER = FacerChamber("large", volume_mL=134.0, area_cm2=100.0)
 
 @dataclass(frozen=True)
 class ControllerGains:
-    """PID on glucose, acting on the perfusion rate (Table 1, identical for all runs)."""
+    """PID controller gains K_p, K_i, K_d and minimum perfusion rate D_min (Table 1, all runs)."""
 
     kp: float = 0.215  # L/(mmol day)
     ki: float = 5.16  # L/(mmol day^2)
@@ -117,7 +118,7 @@ RUNS = dict(sorted(RUNS.items()))
 PUBLISHED_MU_MAX = {1: 2.14, 2: 2.02, 4: 1.39, 5: 0.405, 6: 1.58}
 PUBLISHED_EXPANSION_TO_1E7 = {1: 2.59, 2: 4.14, 4: 4.65, 5: 5.38, 6: 2.71}  # t_T - t_I, days
 
-DOSE_THRESHOLD = 10.0  # 1e6 cells/mL, the threshold used in Table 2
+X_T = 10.0  # threshold cell concentration [X_T] (10^6 cells/mL) used for t_T - t_I in Table 2
 
 
 def with_changes(run: FacerRun, **kwargs) -> FacerRun:

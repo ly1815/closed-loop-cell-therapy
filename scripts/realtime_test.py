@@ -1,7 +1,7 @@
 """Pseudo-real-time test of the digital shadow, as in Egan et al. (2025), Figures 5 and 6.
 
 For every run, fit the real-time shadow with 1.5 to 4 days of perfusion data (run 3: up to 2.5
-days, before its pump stop) and record the relative error of the predicted final cell
+days, before its mechanical issue) and record the relative error of the predicted final cell
 concentration. Then plot the 2.5-day forecasts with their 95% bands and the predicted time to
 reach 1e7 cells/mL.
 
@@ -18,7 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-from cltherapy.process.parameters import DOSE_THRESHOLD, RUNS
+from cltherapy.process.parameters import X_T, RUNS
 from cltherapy.shadow import OnlineData, fit_realtime
 from cltherapy.sim.runner import run_published
 
@@ -57,9 +57,9 @@ def main() -> None:
         for n, e in errors[w].items():
             ax[0].plot(i + 0.15, abs(e), "o", ms=4, color=COLORS[n], alpha=0.8)
     ax[0].axhline(30, color="grey", ls=":", lw=1)
-    ax[0].set_xlabel("Days of online perfusion data")
-    ax[0].set_ylabel("Relative error of predicted final cell concentration (%)")
-    ax[0].set_title("Real-time shadow, all runs (cf. Egan et al. Fig. 5)")
+    ax[0].set_xlabel("Online data (days)")
+    ax[0].set_ylabel("Relative error of predicted [X$_F$] (%)")
+    ax[0].set_title("Digital shadow testing (cf. Egan et al., Fig. 5)")
 
     for n, f in fits_25.items():
         r, v = RUNS[n], sims[n]
@@ -71,11 +71,11 @@ def main() -> None:
         ax[1].fill_between(t, b["X_lo"], b["X_hi"], color=COLORS[n], alpha=0.12, lw=0)
         ax[1].plot(r.t_F, v.X_F_count, "D" if "patient" in r.cells else "o", color=COLORS[n], mec="k")
         ax[1].axvline(f.t_now, color=COLORS[n], ls=":", lw=0.8)
-    ax[1].axhline(DOSE_THRESHOLD, color="grey", lw=1, ls="--")
-    ax[1].text(0.05, DOSE_THRESHOLD + 0.5, "10 million cells/mL", color="grey", fontsize=8)
+    ax[1].axhline(X_T, color="grey", lw=1, ls="--")
+    ax[1].text(0.05, X_T + 0.5, "[X$_T$] = 10$^7$ cells/mL", color="grey", fontsize=8)
     ax[1].set_xlabel("Time from start of process (days)")
-    ax[1].set_ylabel("Cell concentration (10$^6$ cells/mL)")
-    ax[1].set_title("Forecasts from 2.5 days of perfusion data, 95% bands (cf. Fig. 6)")
+    ax[1].set_ylabel("[X(t)] (10$^6$ cells/mL)")
+    ax[1].set_title("Predictions from 2.5 days of online data, 95% bands (cf. Fig. 6)")
     ax[1].legend(frameon=False, fontsize=8)
     for a in ax:
         a.grid(alpha=0.3)
@@ -86,7 +86,7 @@ def main() -> None:
     print("\nPredicted time to 1e7 cells/mL from 2.5 days of data (days after seeding):")
     for n, f in fits_25.items():
         r = RUNS[n]
-        print(f"  run {n}: {f.harvest_time(DOSE_THRESHOLD) - r.t_I:.2f}")
+        print(f"  run {n}: {f.threshold_time(X_T) - r.t_I:.2f}")
 
 
 if __name__ == "__main__":

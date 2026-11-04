@@ -1,11 +1,11 @@
-"""The virtual FACER: one run of the large chamber, stepped every 10 s.
+"""Virtual bioreactor run: the large chamber of the FACER, stepped every 10 s.
 
 The process follows the Egan et al. (2025) balances (process/facer.py), but here the PID acts on
 filtered, noisy, bubble-affected glucose readings, as on the real instrument. Everything is
 recorded so a run can be replayed, plotted, streamed to virtual devices or fed to the shadow.
 
 Faults:
-    pump_stop(start, duration)  the pump stops and data acquisition is lost, as in run 3
+    pump_stop(start, duration)  mechanical issue: no perfusion and no online data, as in run 3
     growth_noise                 day-to-day variation of the growth rate (off by default)
 """
 

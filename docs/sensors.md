@@ -1,43 +1,49 @@
-# Sensors
+# Online and off-line data
 
-What the FACER platform measures, following Egan et al. (2025), section 2.2. Noise levels and
-bubble statistics are placeholders chosen to resemble the published traces; the rest is as
-published.
+Measurements of the virtual bioreactor, following section 2.2 of Egan et al. (2025). The noise
+levels and bubble statistics are assumed values chosen to resemble the published online data; the
+measurement frequencies and the filter specification are those of the original study.
 
-| Signal | How | Rate | In the simulator |
+| Variable | Measurement | Frequency | Virtual bioreactor |
 | --- | --- | --- | --- |
-| Glucose | single-use enzymatic sensor in the cartridge | every 10 s | noise 0.08 mmol/L, bubbles, then the Butterworth filter |
-| Lactate | single-use enzymatic sensor | every 10 s | same as glucose |
-| Dissolved oxygen | online sensor, reported as % of saturation | online | normalised C/C*, noise 0.01 |
-| pH | online sensor | online | not modelled (not part of the paper's model) |
-| Perfusion rate | the PID's own output | every 10 s | exact |
-| Cell concentration | offline counter, cells resuspended | at seeding and after perfusion only | 5% CV |
-| Phenotype | flow cytometry; can use sedimented cells, but gives no count | offline | not modelled |
+| Glucose concentration [S(t)] | single-use enzymatic sensor (online) | 10 s | Gaussian noise, sd 0.08 mmol/L; bubble artefacts; Butterworth filter |
+| Lactate concentration [P(t)] | single-use enzymatic sensor (online) | 10 s | as for glucose |
+| Normalised DO, [C(t)]/[C*] | single-use sensor (online) | online | Gaussian noise, sd 0.01 |
+| pH | single-use sensor (online) | online | not modelled (not part of the model) |
+| Perfusion rate D(t) | PID controller output (online) | 10 s | exact |
+| Cell concentration [X] | cell counter, suspended cells (off-line) | t_I and t_F only | coefficient of variation 5% |
+| Phenotype | flow cytometry, suspended or sedimented cells (off-line) | | not modelled |
 
-## Bubbles and filtering
+## Bubble artefacts and filtering
 
-Bubbles passing the sensors cause artificial drops in both glucose and lactate, followed by a
-recovery when the bubble moves on. To stop them driving the pump, the raw signals go through a
-2nd-order low-pass Butterworth filter (cut-off 0.001 Hz) before the PID. Some artefacts survive
-the filter, which is why the published data show downward glucose spikes followed by upward
-perfusion spikes. The derivative gain is kept 3-4 orders of magnitude below K_p and K_i for the
-same reason.
+Bubbles generated during the expansion process interfere with the online sensors, leading to
+artificial drops in the glucose and lactate concentration readings, followed by rises after the
+bubbles have moved away from the sensors. To prevent these fluctuations impacting the perfusion
+rate, the raw glucose and lactate data are filtered before being passed to the PID controller by a
+lowpass Butterworth filter of order 2 with a cut-off frequency of 0.001 Hz. Not all bubble
+artefacts are filtered out, which results in downward spikes of the glucose (and lactate)
+concentration followed by upward spikes in the perfusion rate. The derivative gain K_d is set
+3-4 orders of magnitude lower than K_p and K_i to mitigate the impact of the bubbles on the
+perfusion rate.
 
-The simulator draws bubbles as a Poisson process (3 a day, depth 30-80% of the true value,
-20-300 s long), filters the 10 s readings causally, and feeds the filtered glucose to the PID. The
-paper quotes a 1 Hz filter sampling frequency; filtering the 10 s readings with the same
-0.001 Hz cut-off gives the same time constant (about 160 s).
+In the virtual bioreactor, bubbles occur as a Poisson process (3 per day); during a bubble the
+readings fall to a fraction of 0.3-0.8 of the true concentration for 20-300 s. The filter is applied
+causally to the 10 s readings with the published cut-off frequency. (The original filter is
+specified with a sampling frequency of 1 Hz; the cut-off frequency, and hence the time constant of
+approximately 160 s, is the same.)
 
-## Why there is no online cell count
+## Off-line cell concentration
 
-Resuspending sedimented cells to count them disturbs their growth and risks the sterile barrier.
-Bio-capacitance probes need suspended cells and space for a probe. So the cell concentration is
-inferred, which is what the digital shadow does.
+Accurately measuring the cell concentration requires the cells to be in suspension, and
+resuspending the cells after they have sedimented can disturb their growth. Suspension samples are
+therefore taken only prior to sedimentation and when perfusion has ended, giving [X_I] and [X_F].
+Hard sensors such as dielectric spectroscopy are less suited to bioreactors in which the cells grow
+whilst sedimented on a membrane, which motivates the soft sensor of cell concentration.
 
-## Faults the simulator can reproduce
+## Process disturbances
 
-| Fault | Source | How |
+| Disturbance | Origin in the original study | Virtual bioreactor |
 | --- | --- | --- |
-| Pump stop with data loss | run 3: 0.5 day, 2.5 days into perfusion | `PumpStop(start, duration)`; applied to run 3 by default |
-| Bubble artefacts | section 2.2 | `BubbleModel` |
-| Oscillating perfusion | run 6 (reduced chi-squared 3.2, attributed to PID tuning) | change `ControllerGains` |
+| Mechanical issue: perfusion stopped, no online data | run 3, 2.5 days after the start of perfusion, approximately 0.5 days | `PumpStop(start, duration)`, applied to run 3 by default |
+| Bubble artefacts | all runs (section 2.2) | `BubbleModel` |
+| Oscillations in the online data | run 6 (reduced chi-squared 3.2), possibly induced by the choice of PID parameters | modify `ControllerGains` |
