@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "closed-loop-cell-therapy"
-version = "0.1.0"
-description = "A virtual closed-loop CAR-T expansion: rocking-bag process, devices, EnKF soft sensing and decisions"
+version = "0.2.0"
+description = "A virtual CAR-T perfusion expansion and digital shadow, built on Egan et al. (2025)"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Luxi Yu" }]

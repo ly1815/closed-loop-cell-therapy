@@ -1,56 +1,55 @@
 # Architecture
 
-The demo follows one autologous CAR-T batch through a perfused rocking-bag
-expansion. Each layer is its own component, placed on the ISA-95 levels, so
-the software around the model looks like a real deployment.
+The demo follows one autologous CAR-T batch through a FACER perfusion expansion. Each layer is
+its own component, placed on the ISA-95 levels, so the software around the model looks like a
+real deployment.
 
 ```mermaid
 flowchart BT
     subgraph L0["Level 0-1: process and devices"]
-        P["Process model<br/>two T-cell populations, glucose,<br/>lactate, bicarbonate, oxygen"]
-        R["Virtual rocker + controller<br/>OPC UA server (day 4)"]
-        A["Virtual at-line analyser<br/>REST API (day 5)"]
+        P["FACER large chamber<br/>sedimented T cells, glucose,<br/>lactate, DO (Egan et al. 2025)"]
+        R["Virtual FACER controller<br/>glucose PID on the pump;<br/>OPC UA server (day 4)"]
+        A["Offline cell counter<br/>REST API (day 5)"]
         P --- R
         P --- A
     end
     subgraph L2["Level 2: supervision"]
-        C["Collector and orchestrator<br/>run state machine, sampling (days 5, 7)"]
+        C["Collector and orchestrator<br/>run state machine (days 5, 7)"]
         H[("Historian and audit log<br/>SQLite (day 9)")]
     end
     subgraph L3["Level 3: operations"]
-        T["Patient digital twin<br/>EnKF soft sensor (day 6)"]
-        D["Recommendations<br/>harvest day, sampling (day 8)"]
-        B["Bayesian optimiser<br/>across PD runs (day 10)"]
+        T["Digital shadow<br/>least squares now, EnKF (day 6)"]
+        D["Harvest-time recommendation<br/>(day 8)"]
+        B["PID tuning and Bayesian<br/>optimisation across runs (day 10)"]
     end
     U["Operator and QA<br/>Streamlit dashboard, thin client"]
-    R -->|"OPC UA: pH, DO, weight,<br/>rock rate, gas, pressure"| C
-    A -->|"REST: counts, glucose, lactate"| C
+    R -->|"OPC UA: D, S, P, DO,<br/>set point, pump state"| C
+    A -->|"REST: counts at seeding and end"| C
     C --> H
     C --> T
     T --> D
     D -->|"advisory, needs approval"| U
-    U -->|"approved setpoints, within limits"| R
+    U -->|"approved set-point changes, within limits"| R
     H --> B
-    B -->|"next PD run conditions"| U
+    B -->|"next run conditions, PID gains"| U
 ```
 
 ## The three loops
 
 | Loop | Timescale | Where it lives | Decides |
 | --- | --- | --- | --- |
-| Inner | seconds to minutes | `control/rocker.py`: pH by CO2, DO by rock rate then O2, perfusion schedule | the controller, within hard limits |
-| Run | hours, one patient | EnKF soft sensor and recommendations (days 6 to 8) | operator and QA |
-| Campaign | between process-development runs | Gaussian-process Bayesian optimisation (day 10) | the process development team |
+| Inner | 10 s | `control/perfusion.py`: PID on filtered glucose, setting the perfusion rate | the controller, within D_min and the pump limit |
+| Run | hours, one patient | the digital shadow and its harvest forecast | operator and QA |
+| Campaign | between runs | PID tuning and Bayesian optimisation (day 10) | the process development team |
 
-## What exists now (days 1 to 3)
+A digital shadow only receives data (physical to virtual); a digital twin also acts back on the
+process. Egan et al. argue the shadow's advisory role keeps regulatory risk low: it predicts, a
+person decides.
 
-- `process/parameters.py`: every parameter with unit, status and source, the
-  literature anchors, and patients A and B.
-- `process/model.py`: the ODEs, the rates shared with the soft sensors (OUR,
-  acid production), and the observables.
-- `control/pid.py`, `control/rocker.py`: the inner loop.
-- `sim/runner.py`: a batch stepped one control interval at a time, with a
-  recorded history; `sim/clock.py`: the accelerated clock for live mode.
-- `sensors/`: online channels with noise, drift and faults; at-line
-  analysers with turnaround and sample cost; flow cytometry at harvest; soft
-  measurements of oxygen uptake and acid production. See [sensors.md](sensors.md).
+## What exists now
+
+- `process/`: growth model, published runs, mass balances.
+- `control/perfusion.py`: the glucose PID; `control/pid.py`: a generic PI kept for the control notes.
+- `sensors/`: enzymatic glucose and lactate with bubbles and filtering, DO, offline counts.
+- `sim/`: the virtual FACER run and the accelerated clock.
+- `shadow/`: training and real-time fits, confidence bands, harvest time.

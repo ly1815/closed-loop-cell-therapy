@@ -1,0 +1,382 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{mathpazo}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{microtype}
+\usepackage{amsmath,mathtools}
+\usepackage{siunitx}
+\usepackage{booktabs,tabularx,array}
+\usepackage{graphicx}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage[shortlabels]{enumitem}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage[colorlinks=true,linkcolor=accent,urlcolor=accent,citecolor=accent]{hyperref}
+
+\definecolor{accent}{HTML}{0F6E56}
+\definecolor{boxbg}{HTML}{EEF4F2}
+
+\titleformat{\section}{\Large\bfseries\color{accent}}{\thesection}{0.8em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{0.8em}{}
+\titlespacing*{\section}{0pt}{14pt}{6pt}
+\titlespacing*{\subsection}{0pt}{10pt}{4pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[L]{\small\color{gray}Closed-loop cell therapy: the FACER simulator and digital shadow}
+\fancyfoot[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+\newtcolorbox{note}[1][]{colback=boxbg, colframe=accent, boxrule=0.6pt, arc=1pt,
+  left=6pt, right=6pt, top=4pt, bottom=4pt, fonttitle=\bfseries, #1}
+
+\sisetup{per-mode=symbol}
+\DeclareSIUnit\mM{mM}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\kla}{k_La}
+\newcommand{\tlag}{t_{\mathrm{lag}}}
+\newcommand{\tsed}{t_{\mathrm{sed}}}
+\newcommand{\mumax}{\mu_{\max}}
+\setlength{\parskip}{4pt}
+\setlength{\parindent}{0pt}
+\setlist{nosep, leftmargin=*}
+\renewcommand{\arraystretch}{1.15}
+
+\title{\color{accent}\textbf{Closed-loop cell therapy}\\[4pt]
+\large A virtual CAR-T perfusion bioreactor and its digital shadow,\\ built on Egan et al.\ (2025) and explained for a CHO engineer}
+\author{Luxi Yu}
+\date{Repository \code{closed-loop-cell-therapy}, version 0.2.0}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{note}[title={The project in four sentences}]
+A patient's own T cells are expanded for five to six days in a small closed bioreactor, the
+Aglaris FACER, and the cells themselves are the drug. The cell concentration cannot be measured
+during the run without disturbing the cells, yet it decides when the batch reaches its dose and
+can be harvested. Egan et al.\ (2025) built a \emph{digital shadow}: a mechanistic model fitted in
+real time to the signals the bioreactor already measures (perfusion rate, glucose, lactate), which
+forecasts the cell concentration. This repository rebuilds their model and their six published
+runs as a virtual bioreactor, and rebuilds the shadow on top of it.
+\end{note}
+
+\textbf{Source.} Egan JR, Mar\'i-Buy\'e N, Ben\'itez-Cano EV, et al.\ A digital shadow of CAR T
+cell expansion in a perfusion bioreactor: informing optimal harvest times for autologous cell
+therapy. \emph{Biotechnology Progress} 2025;41(6):e70045,
+\href{https://doi.org/10.1002/btpr.70045}{doi:10.1002/btpr.70045}. Open access (CC BY 4.0).
+Equation numbers below refer to the paper (1--18) and its supporting information (S1--S80).
+
+\tableofcontents
+
+% =====================================================================
+\section{Cell therapy, translated from CHO}
+
+In a CHO process the cells are a factory: they secrete an antibody and are discarded at harvest.
+In autologous CAR-T the \emph{cells are the product}. T cells are collected from the patient,
+activated so that they divide, given a gene for a chimeric antigen receptor (CAR) that makes them
+recognise the tumour, \textbf{expanded}, then harvested, formulated and infused back into the same
+patient. The repository models the expansion.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l X X@{}}
+\toprule
+ & CHO (mAb) & CAR-T in the FACER \\
+\midrule
+Product & secreted protein & the cells \\
+Batch & one cell line, many patients & one patient, one batch, \SI{134}{\milli\litre} chamber \\
+Starting material & characterised cell bank & the patient's blood; varies between patients \\
+Quantity attribute & titre & dose: number of cells \\
+Quality attribute & glycosylation and other variants & cell phenotype; worsens with long expansion \\
+Vessel & stirred tank, cells in suspension & static chamber, cells sedimented on a gas-permeable membrane \\
+Perfusion & ATF/TFF with cell bleed & medium in and out above the settled cells, no bleed \\
+Cell count during the run & routine sample or capacitance probe & not possible without resuspending the cells \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{The harvest decision.} Longer expansion gives more cells but is associated with
+progressive differentiation and less effective cells, and with higher cost and longer waits for
+patients. Too short an expansion may not reach the dose, especially from heavily pretreated
+patients. The best harvest time is therefore patient specific, and it needs the cell
+concentration, which is exactly what cannot be measured during the run.
+
+\textbf{Metabolism} is familiar: activated T cells are strongly glycolytic. Across the five
+training runs the yield of lactate from glucose averages 1.99~mol/mol, close to the 2 of aerobic
+glycolysis (Table~2 of the paper).
+
+% =====================================================================
+\section{The FACER process}
+
+The FACER cartridge is a closed, single-use, automated system with two culture chambers
+(\SI{13.4}{\milli\litre} on \SI{10}{\centi\metre\squared}, and \SI{134}{\milli\litre} on
+\SI{100}{\centi\metre\squared}). Cells grow under static conditions on a gas-permeable membrane
+that separates the medium from a controlled gas zone. Small starting numbers are seeded in the
+small chamber and passaged to the large one; all modelling here is of the large chamber.
+
+\begin{enumerate}
+  \item \textbf{Seeding} at $t_I$ with concentration $X_I$, counted offline.
+  \item \textbf{Sedimentation}, $t_I$ to $\tsed$: no perfusion; the cells settle on the membrane.
+  \item \textbf{Perfusion}, $\tsed$ to $t_F$: fresh medium (glucose $S_I$) enters and spent medium
+    leaves at the same rate $D$, so the volume is constant. A PID controller sets $D$ to hold
+    glucose at a set point $S_{\mathrm{sp}}$. Cells stay sedimented and none leave.
+  \item \textbf{End}: cells are resuspended and counted, giving $X_F$.
+\end{enumerate}
+
+Online, single-use sensors read glucose and lactate every \SI{10}{\second} (enzymatic), plus pH and
+dissolved oxygen. Bubbles passing the sensors cause false drops in glucose and lactate, so the raw
+signals go through a 2nd-order low-pass Butterworth filter (cut-off \SI{0.001}{\hertz}) before the
+controller sees them. Some artefacts survive: downward glucose spikes, then upward perfusion spikes.
+
+% =====================================================================
+\section{The model}
+
+Time $t$ is in days, cells $X$ in \num{e6}~cells/mL, glucose $S$ and lactate $P$ in mmol/L. With
+$Y_{xs}$ in cells/pmol and $Y_{px}$ in pmol/cell, the terms $\mu X/Y_{xs}$ and $Y_{px}\mu X$ come out
+directly in mmol/L/day. $H$ is the Heaviside step.
+
+\subsection{Growth: the Richards model, early on}
+Growth is limited not by glucose or lactate (kept in comfortable ranges by perfusion) but by cells
+competing for space. Early in the expansion, far below the carrying capacity, the Richards model
+reduces to a two-parameter form, with a lag:
+\begin{align}
+  X(t) &= \frac{X_I}{\bigl(1 - H(t-\tlag)\,\mumax\,\nu\,(t-\tlag)\bigr)^{1/\nu}}, \label{eq:X}\\
+  \mu(t) &= \frac{H(t-\tlag)\,\mumax}{1 - H(t-\tlag)\,\mumax\,\nu\,(t-\tlag)}, \qquad \nu<0. \label{eq:mu}
+\end{align}
+These are eqs~10 and~11 (S60, S61). $\mumax$ is the growth rate at the end of the lag and $\nu$
+sets how fast it decays. Special cases (S46--S50): $\nu=-1$ gives linear growth, $\nu=-\tfrac12$
+quadratic growth, and $\nu\to0$ exponential growth (figure~\ref{fig:growth}).
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/growth_family.png}
+\caption{The growth model for $\mumax = \SI{1.5}{\per\day}$ and a lag of 0.2~day. The more
+negative $\nu$, the faster the growth rate falls.}
+\label{fig:growth}
+\end{figure}
+
+Two closed forms are used throughout. If both counts are known, $\mumax$ follows from the others
+(eq.~12), and the time to reach a threshold $X_T$, for example a dose, is eq.~13:
+\begin{equation}
+  \mumax = \frac{1-(X_I/X_F)^{\nu}}{\nu\,(t_F-\tlag)}, \qquad
+  t_T = \tlag + \frac{1-(X_I/X_T)^{\nu}}{\mumax\,\nu}.
+  \label{eq:closed}
+\end{equation}
+
+\subsection{Balances}
+\begin{subequations}\label{eq:ode}
+\begin{align}
+  \frac{\dd S}{\dd t} &= H(t-\tsed)\,D\,(S_I - S) - \frac{\mu X}{Y_{xs}}, \\
+  \frac{\dd P}{\dd t} &= Y_{px}\,\mu X - H(t-\tsed)\,D\,P, \\
+  \frac{\dd D}{\dd t} &= H(t-\tsed)\Bigl[-K_p\,\frac{\dd S}{\dd t} + K_i\,(S_{\mathrm{sp}} - S)\Bigr], \qquad D \ge D_{\min}, \label{eq:pi}\\
+  \frac{\dd C'}{\dd t} &= \bigl(H(t-\tsed)\,D + \kla\bigr)(1-C') - \frac{\mu X}{Y'_{xc}}. \label{eq:do}
+\end{align}
+\end{subequations}
+Equation~\eqref{eq:pi} is the velocity form of a PI controller (eq.~2, S18); the derivative gain is
+negligible. $C'$ is dissolved oxygen as a fraction of saturation (eq.~8), with $Y'_{xc}$ the scaled
+yield of cells on oxygen. The lactate yield from glucose is $Y_{ps} = Y_{px}Y_{xs}$ (eq.~5).
+
+\textbf{Lactate settles by itself.} Once glucose sits at its set point, $\dd S/\dd t \approx 0$
+and the glucose balance gives $D\,(S_I-S_{\mathrm{sp}}) = \mu X/Y_{xs}$. Substituting into the lactate
+balance, $\dd P/\dd t = D\,\bigl(Y_{ps}(S_I-S_{\mathrm{sp}}) - P\bigr)$, so
+\begin{equation}
+  P \to P_{ss} = Y_{ps}\,(S_I - S_{\mathrm{sp}}) \qquad \text{(eq.~18)},
+\end{equation}
+whatever the growth. And the perfusion rate tracks growth: with $\nu=-1$ (linear growth) it is
+roughly constant, with $\nu=-\tfrac12$ it rises linearly (eq.~15).
+
+\textbf{Numerics.} The paper found that \code{solve\_ivp} let the perfusion rate go negative, so the
+ODEs are discretised by forward Euler with a \SI{10}{\second} step and each state is clipped at its
+bound every step (S22--S24): $S, P \ge 0$, $D\ge D_{\min}$. $X(t)$ and $\mu(t)$ are analytical.
+\code{process/facer.py} implements exactly this.
+
+\subsection{The six published runs}
+\begin{center}\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{@{}l l r r r r r r r r r r r r@{}}
+\toprule
+Run & Cells & $t_I$ & $\tsed$ & $t_F$ & $S_{\mathrm{sp}}$ & $X_I$ & $X_F$ & $Y_{xs}$ & $Y_{px}$ & $\tlag-t_I$ & $\nu$ & $\mumax$ & $\kla$ \\
+\midrule
+1 & donor 1, A & 0.11 & 0.34 & 5.05 & 20 & 1.49 & 19.0 & 0.231 & 7.93 & 0.160 & $-0.922$ & 2.14 & 3.00 \\
+2 & donor 2, A & 0.14 & 1.02 & 6.03 & 20 & 0.37 & 19.0 & 0.275 & 6.25 & 0.172 & $-0.477$ & 2.02 & 741 \\
+3 & donor 3, A & 0.11 & 0.86 & 6.01 & 20 & 1.49 & 32.5 & \textit{0.259} & \textit{7.62} & \textit{0.092} & $\mathit{-0.537}$ & \textit{1.36} & \textit{3.00} \\
+4 & patient 1, A & 2.09 & 2.84 & 7.00 & 20 & 0.62 & 10.9 & 0.272 & 9.09 & 0.128 & $-0.524$ & 1.39 & 1.73 \\
+5 & donor 4, A & 1.92 & 2.92 & 6.95 & 17 & 1.13 & 8.73 & 0.207 & 6.83 & 0.000 & $-0.000$ & 0.405 & 42.9 \\
+6 & donor 5, B & 0.08 & 0.83 & 4.85 & 21 & 1.49 & 18.2 & 0.311 & 7.99 & 0.000 & $-0.761$ & 1.58 & 20.2 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Times and concentrations are from Table~1, yields, lag and $\nu$ from Table~2, $\mumax$ from
+eq.~12, $\kla$ and $Y'_{xc}$ from Table~S4. All runs share $S_I=25$ (26 for run 6),
+$K_p=0.215$, $K_i=5.16$, $K_d=\num{7.46e-5}$ and $D_{\min}=\SI{0.067}{\per\day}$. Media A is TexMACS
+with IL-7 and IL-15; media B is Advanced TCM with IL-2. Run 4 is the patient's CAR-T cells.
+\emph{Italics}: run 3 was the paper's independent test run and was never fitted; here it uses the
+training means, with $\mumax$ set by eq.~12 so that it ends at the published $X_F$.
+
+% =====================================================================
+\section{The virtual FACER}
+
+The model above is what the shadow fits. The \emph{virtual bioreactor} that generates the data
+(\code{sim/runner.py}) uses the same balances, but adds what makes real data hard:
+\begin{itemize}
+  \item \textbf{Sensors}: noisy enzymatic glucose and lactate every \SI{10}{\second}, with bubbles
+    drawn as a Poisson process, then the published Butterworth filter, applied causally.
+  \item \textbf{The controller acts on measurements}: the PID (\code{control/perfusion.py}, the
+    velocity form of S12 with the small derivative term) sees the filtered glucose, never the truth.
+  \item \textbf{Offline counts} only at seeding and at the end, with 5\% error.
+  \item \textbf{Faults}: run 3's pump stop, 2.5 days into perfusion for half a day, during which
+    perfusion stops and the online data are lost. Optional slow random variation of growth.
+\end{itemize}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/run1.png}
+\caption{Virtual run 1 (blue) against the model with the published parameters (red), laid out like
+Figure~3 of the paper. Green band: sedimentation. The controller overshoots once, then holds glucose
+at \SI{20}{\mM}; lactate settles at $P_{ss}$; bubble artefacts give glucose dips and perfusion spikes.}
+\label{fig:run1}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/bubble_filter.png}
+\caption{Two bubbles, minute by minute. The filter turns a deep, short drop in the raw reading into
+a shallow, longer dip; the controller still reacts with a perfusion spike.}
+\label{fig:bubble}
+\end{figure}
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/run3.png}
+\caption{Virtual run 3 with its pump stop. Without perfusion, glucose falls and lactate climbs; when
+the pump restarts, the controller pushes the perfusion rate well above the model line to recover.
+The model assumes growth is not affected, which is the paper's assumption too.}
+\label{fig:run3}
+\end{figure}
+
+% =====================================================================
+\section{The digital shadow}
+
+A \emph{digital twin} exchanges data both ways and can act on the process; a \emph{digital
+shadow} only receives data and advises a person. The shadow here (\code{shadow/fit.py}) sees what
+the platform logs: perfusion rate, filtered glucose and lactate, and the seeding count. It
+simulates the whole controlled process, PI included, and fits it to the three online signals at
+once, with equal weights, by least squares.
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l l l X@{}}
+\toprule
+Mode & Known & Fitted & Fixed \\
+\midrule
+Training & $X_I$, $X_F$, all online data & $Y_{xs}$, $Y_{px}$, $\tlag$, $\nu$ & $\mumax$ from eq.~12 \\
+Real time & $X_I$, online data so far & $Y_{px}$, $\mumax$, $\nu$ & $\tlag-t_I = 0.092$ and $Y_{xs} = 0.259$, the training means \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\textbf{Why fix two parameters in real time.} The real-time model is structurally identifiable only
+if $\mumax$ or $\tlag$ is known (Table~S1). Fixing the lag alone still left the fit practically
+unidentifiable, so the paper also fixed $Y_{xs}$, the most consistent parameter across runs. The
+DO equation is left out because $\kla$ and $Y'_{xc}$ are not practically identifiable from these
+data (Table~S4). A CHO analogy: you can infer cell growth from how hard the controller works to
+hold glucose, but only if you know how much glucose each new cell costs.
+
+\textbf{Confidence bands} propagate the covariance of $(\mumax, \nu)$ to $X(t)$ and $\mu(t)$ to
+first order, using analytical sensitivities (S67--S70), scaled by the reduced $\chi^2$ and a Student
+$t$ factor (S71, S72). The fit uses scipy's trust-region least squares with bounds ($\nu<0$,
+positive yields) on a \SI{60}{\second} grid; the paper used Levenberg--Marquardt via lmfit at
+\SI{10}{\second}.
+
+\subsection{Results}
+Training fits recover the published parameters to within a few per cent; the residual differences
+come from the 5\% counting error on $X_F$ and the sensor noise. Figure~\ref{fig:rt} repeats the
+paper's pseudo-real-time test.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{figures/realtime_test.png}
+\caption{Left: absolute relative error of the predicted final concentration against days of
+perfusion data (cf.\ Figure~5 of the paper). Right: forecasts from 2.5 days of data, with the
+offline final counts (cf.\ Figure~6). The 95\% bands are almost invisible.}
+\label{fig:rt}
+\end{figure}
+
+\begin{center}\small
+\begin{tabular}{@{}l r r r r r r r@{}}
+\toprule
+Days of data & Run 1 & Run 2 & Run 3 & Run 4 & Run 5 & Run 6 & Mean $|\cdot|$ \\
+\midrule
+1.5 & 28.2 & 12.7 & $-4.6$ & 0.6 & $-5.3$ & $-31.9$ & 13.9 \\
+2.5 & 15.8 & $-1.5$ & $-3.9$ & $-5.5$ & $-0.6$ & $-22.7$ & 8.3 \\
+4.0 & 7.7 & $-7.6$ & -- & $-7.4$ & 15.7 & $-17.8$ & 11.3 \\
+\bottomrule
+\end{tabular}
+\end{center}
+Relative error (\%) of the predicted final cell concentration. With 2.5 days of data every run is
+within 30\%, with a mean absolute error of 8\% (the paper: 13\%, s.d.\ about 6\%).
+
+\textbf{What the errors say.} Runs 1 and 6 stay biased however much data arrives, in opposite
+directions. Their true $Y_{xs}$ (0.231 and 0.311) differs from the fixed mean (0.259) by about
+$-11\%$ and $+20\%$, and the shadow converts glucose demand into cells through $Y_{xs}$, so the
+forecast inherits that bias. The bands do not cover it, because they only carry the uncertainty of
+the fitted parameters. The paper reached the same conclusion and proposed the fix: sample $Y_{xs}$
+and $\tlag$ from their distribution across runs and refit for each sample. That is an ensemble
+method, which is where an EnKF version of the shadow comes in (day~6).
+
+% =====================================================================
+\section{Checks}
+\code{pytest} runs 31 tests, including:
+\begin{itemize}
+  \item the growth special cases (linear, quadratic, exponential) and $\mu = \dd \ln X/\dd t$;
+  \item $\mumax$ and the expansion periods to \num{e7}~cells/mL against Table~2, for all five
+    training runs;
+  \item eqs~12 and~13 as inverses, and the analytical sensitivities against finite differences;
+  \item every run reaching its published $X_F$, glucose at set point and lactate at $P_{ss}$;
+  \item no perfusion during sedimentation, $D \ge D_{\min}$ after it, and the PID's behaviour;
+  \item the filter's unit gain and lag, bubbles pulling readings down, glucose held despite them;
+  \item run 3 losing perfusion and data during its stop;
+  \item the training fit recovering run 2's parameters, the 2.5-day forecast within 30\%, bands
+    narrowing with more data, and the harvest time matching the forecast.
+\end{itemize}
+
+% =====================================================================
+\section{Limitations and next steps}
+\begin{itemize}
+  \item \textbf{Synthetic data.} The paper's online data are proprietary. The virtual runs reproduce
+    the published parameters and the shape of the published traces, not the traces themselves.
+  \item \textbf{Inherited assumptions}: a well-mixed chamber although the cells are sedimented;
+    no nutrient limitation, death or maintenance; constant yields; all cells alike (no CD4/CD8 or
+    phenotype segregation).
+  \item \textbf{Placeholders}: sensor noise and bubble statistics; run 3's parameters.
+  \item \textbf{Next}: expose the virtual FACER over OPC UA (day~4); an EnKF version of the shadow
+    that samples $Y_{xs}$ and $\tlag$ (day~6); harvest recommendations with an operator in the loop
+    (day~8); and using the shadow to tune the PID, the paper's suggested use for run 6's
+    oscillations (day~10).
+\end{itemize}
+
+% =====================================================================
+\section{Code map}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+\code{process/growth.py} & growth model, eqs 10--13, S60--S70 \\
+\code{process/parameters.py} & the six runs with their sources; training means \\
+\code{process/facer.py} & balances and forward Euler, S19--S24; the model the shadow fits \\
+\code{control/perfusion.py} & glucose PID on the perfusion rate \\
+\code{control/pid.py} & generic PI with anti-windup, the example in the control refresher notes \\
+\code{sensors/online.py} & enzymatic sensors, bubbles, Butterworth filter, DO, offline counts \\
+\code{sim/runner.py} & the virtual FACER, faults, history and CSV export \\
+\code{shadow/fit.py} & training and real-time fits, bands, harvest time \\
+\code{scripts/simulate\_run.py} & figures~\ref{fig:run1} and~\ref{fig:run3} \\
+\code{scripts/realtime\_test.py} & figure~\ref{fig:rt} and the error table \\
+\code{docs/technical\_documentation/make\_figures.py} & all figures in this document \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\end{document}

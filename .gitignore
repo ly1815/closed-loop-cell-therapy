@@ -7,3 +7,14 @@ build/
 dist/
 outputs/
 .DS_Store
+
+# reference papers kept locally (Egan et al. 2025 and its supporting information)
+Egan/
+# LaTeX build files
+*.aux
+*.log
+*.out
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz

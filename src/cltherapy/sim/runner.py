@@ -1,8 +1,12 @@
-"""Run one batch: process model plus the rocker's inner loop.
+"""The virtual FACER: one run of the large chamber, stepped every 10 s.
 
-The controller acts every `control_dt_h`; between actions the inputs are held
-and the ODEs are integrated with scipy. Every interval is recorded, so a run
-can be replayed, plotted or streamed to devices later.
+The process follows the Egan et al. (2025) balances (process/facer.py), but here the PID acts on
+filtered, noisy, bubble-affected glucose readings, as on the real instrument. Everything is
+recorded so a run can be replayed, plotted, streamed to virtual devices or fed to the shadow.
+
+Faults:
+    pump_stop(start, duration)  the pump stops and data acquisition is lost, as in run 3
+    growth_noise                 day-to-day variation of the growth rate (off by default)
 """
 
 from __future__ import annotations
@@ -12,115 +16,139 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
-from scipy.integrate import solve_ivp
 
-from ..control.rocker import RockerController
-from ..process.model import Inputs, initial_state, observables, rhs, STATE_NAMES
-from ..process.parameters import DEFAULT_PROCESS, PatientParams, ProcessParams
-from ..sensors.online import OnlineSensors
+from ..control.perfusion import GlucosePerfusionPID
+from ..process.facer import DT_10S
+from ..process.growth import specific_growth_rate
+from ..process.parameters import FacerRun
+from ..sensors.online import OfflineCounts, OnlineSensors
+
+FIELDS = ("t", "X", "mu", "S", "P", "D", "C", "S_raw", "P_raw", "S_filt", "P_filt", "C_meas",
+          "D_cmd", "pump_on", "phase")
 
 
 @dataclass
-class Batch:
-    """One batch. With `sensors` set, the controller sees sensor readings, not the truth."""
+class PumpStop:
+    start: float  # day
+    duration: float  # days
 
-    patient: PatientParams
-    process: ProcessParams = DEFAULT_PROCESS
-    controller: RockerController = field(default_factory=RockerController)
-    control_dt_h: float = 5.0 / 60.0
-    sensors: "OnlineSensors | None" = None
-    t_h: float = 0.0
-    history: list[dict] = field(default_factory=list)
+
+@dataclass
+class VirtualFacer:
+    run: FacerRun
+    sensors: OnlineSensors = field(default_factory=OnlineSensors)
+    counts: OfflineCounts = field(default_factory=OfflineCounts)
+    dt: float = DT_10S
+    growth_noise: float = 0.0  # sd of a slow random walk on log(mu), per sqrt(day)
+    pump_stops: list[PumpStop] = field(default_factory=list)
+    seed: int = 0
 
     def __post_init__(self) -> None:
-        self.x = initial_state(self.process, self.patient)
-        self.u = Inputs(rock_angle_deg=self.controller.rock_angle_deg)
-        self.cells_sampled = 0.0  # 1e6 cells removed by sampling
-        self.n_samples = 0
-        self._last_reading: dict = {}
-        self._record()
+        r = self.run
+        self.rng = np.random.default_rng(self.seed)
+        self.pid = GlucosePerfusionPID(S_sp=r.S_sp, gains=r.gains)
+        self.t = r.t_I
+        self.X, self.S, self.P, self.D, self.C = r.X_I, r.S_I, 0.0, 0.0, 1.0
+        self._log_mu_dev = 0.0
+        self.history: dict[str, list] = {k: [] for k in FIELDS}
+        self.X_I_count = self.counts.count(r.X_I)  # suspension count at seeding
+        self.X_F_count: float | None = None
+        self._reading = self.sensors.read(self.S, self.P, self.C)
+        self._record(D_cmd=0.0, pump_on=False)
 
-    def truth(self) -> dict:
-        return observables(self.t_h, self.x, self.u, self.process, self.patient)
+    # ------------------------------------------------------------------ helpers
+    def phase(self) -> str:
+        if self.t < self.run.t_sed:
+            return "sedimentation"
+        if self.t < self.run.t_F:
+            return "perfusion"
+        return "done"
 
-    def _record(self) -> None:
-        obs = self.truth()
-        row = {"t_h": self.t_h, "t_day": self.t_h / 24.0}
-        row.update({f"x_{n}": float(v) for n, v in zip(STATE_NAMES, self.x)})
-        row.update({k: float(v) for k, v in obs.items()})
-        row.update({
-            "perfusion_vvd": self.u.perfusion_vvd,
-            "rock_rpm": self.u.rock_rpm,
-            "rock_angle_deg": self.u.rock_angle_deg,
-            "y_O2": self.u.y_O2,
-            "y_CO2": self.u.y_CO2,
-            "pH_setpoint": self.controller.pH_setpoint,
-            "DO_setpoint": self.controller.DO_setpoint,
-            "cells_sampled": self.cells_sampled,
-            "n_samples": self.n_samples,
-        })
-        row.update({f"meas_{k}": v for k, v in self._last_reading.items()})
-        self.history.append(row)
+    def _pump_stopped(self) -> bool:
+        return any(p.start <= self.t < p.start + p.duration for p in self.pump_stops)
 
-    def step(self) -> dict:
-        """Advance one control interval and return the newest record."""
-        obs = self.truth()
-        if self.sensors is not None:
-            self._last_reading = self.sensors.read(self.t_h, obs)
-            pH, DO = self._last_reading["pH"], self._last_reading["DO_pct"]
-        else:
-            pH, DO = obs["pH"], obs["DO_pct"]
-        self.u = self.controller.step(self.t_h, pH, DO, self.control_dt_h)
-        sol = solve_ivp(
-            rhs, (self.t_h, self.t_h + self.control_dt_h), self.x,
-            args=(self.u, self.process, self.patient), method="LSODA", rtol=1e-6, atol=1e-9,
-        )
-        self.x = np.maximum(sol.y[:, -1], 0.0)
-        self.t_h += self.control_dt_h
-        self._record()
-        return self.history[-1]
+    def _mu(self) -> float:
+        r = self.run
+        tau = self.t - r.t_lag
+        if tau < 0:
+            return 0.0
+        mu = float(specific_growth_rate(self.t, r.t_lag, r.mu_max, r.nu))
+        return mu * np.exp(self._log_mu_dev)
 
-    def run(self, days: float) -> "Batch":
-        n = int(round(days * 24.0 / self.control_dt_h))
-        for _ in range(n):
+    def _record(self, D_cmd: float, pump_on: bool) -> None:
+        h = self.history
+        for k, v in (("t", self.t), ("X", self.X), ("mu", self._mu()), ("S", self.S), ("P", self.P),
+                     ("D", self.D), ("C", self.C), ("D_cmd", D_cmd), ("pump_on", pump_on),
+                     ("phase", self.phase())):
+            h[k].append(v)
+        for k in ("S_raw", "P_raw", "S_filt", "P_filt", "C_meas"):
+            v = self._reading[k]
+            h[k].append(np.nan if v is None else v)
+
+    # ------------------------------------------------------------------ stepping
+    def step(self) -> None:
+        r, dt = self.run, self.dt
+        if self.phase() == "perfusion" and not self.pid.running:
+            self.pid.start()
+        stopped = self._pump_stopped()
+        self.sensors.offline = stopped
+        D_cmd = self.pid.update(self._reading["S_filt"], dt) if not stopped else self.pid.D
+        self.D = D_cmd if (self.phase() == "perfusion" and not stopped) else 0.0
+
+        if self.growth_noise > 0:
+            self._log_mu_dev += self.growth_noise * np.sqrt(dt) * self.rng.normal()
+        mu = self._mu()
+        growth = mu * self.X
+        self.S = max(0.0, self.S + dt * (self.D * (r.S_I - self.S) - growth / r.Y_xs))
+        self.P = max(0.0, self.P + dt * (r.Y_px * growth - self.D * self.P))
+        self.C = min(1.0, max(0.0, self.C + dt * ((self.D + r.kLa) * (1.0 - self.C) - growth / r.Y_xc)))
+        self.X = self.X + dt * growth
+        self.t += dt
+        self._reading = self.sensors.read(self.S, self.P, self.C)
+        self._record(D_cmd=D_cmd, pump_on=self.D > 0)
+
+    def run_until(self, t_end: float) -> "VirtualFacer":
+        while self.t < t_end - 0.5 * self.dt:
             self.step()
         return self
 
-    def take_sample(self, volume_mL: float) -> dict:
-        """Draw a closed sample through the syringe port.
+    def run_to_end(self) -> "VirtualFacer":
+        self.run_until(self.run.t_F)
+        self.X_F_count = self.counts.count(self.X)  # suspension count once perfusion ends
+        return self
 
-        Returns the true state of the drawn volume. The scale-controlled feed
-        refills the bag with fresh medium, so cells are diluted: every sample
-        costs cells from the patient's dose.
-        """
-        drawn = self.truth()
-        frac = min(max(volume_mL / (self.process.volume_L * 1e3), 0.0), 0.5)
-        M, E, Xd, G, L, B, O = self.x
-        p = self.process
-        self.cells_sampled += (M + E) * volume_mL
-        self.n_samples += 1
-        self.x = np.array([
-            M * (1 - frac), E * (1 - frac), Xd * (1 - frac),
-            G + frac * (p.glc_in - G), L + frac * (p.lac_in - L), B + frac * (p.hco3_in - B), O,
-        ])
-        return drawn
-
+    # ------------------------------------------------------------------ access
     def series(self, key: str) -> np.ndarray:
-        return np.array([row[key] for row in self.history])
+        return np.asarray(self.history[key], dtype=object if key == "phase" else float)
 
-    def at_day(self, day: float) -> dict:
-        i = int(np.argmin(np.abs(self.series("t_day") - day)))
-        return self.history[i]
+    def online_data(self) -> dict[str, np.ndarray]:
+        """What the platform logs: time, perfusion command, filtered glucose and lactate, DO."""
+        return {"t": self.series("t"), "D": self.series("D"), "S": self.series("S_filt"),
+                "P": self.series("P_filt"), "C": self.series("C_meas")}
 
     def to_csv(self, path: str | Path) -> Path:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=list(self.history[0].keys()))
-            writer.writeheader()
-            writer.writerows(self.history)
+            w = csv.writer(fh)
+            w.writerow(FIELDS)
+            w.writerows(zip(*(self.history[k] for k in FIELDS)))
         return path
 
 
-def run_batch(patient: PatientParams, days: float = 10.0, **kwargs) -> Batch:
-    return Batch(patient=patient, **kwargs).run(days)
+def run_published(run: FacerRun, *, seed: int = 0, realistic: bool = True, **kwargs) -> VirtualFacer:
+    """Simulate a published run. realistic=False gives noise-free sensors without bubbles."""
+    if not realistic:
+        kwargs.setdefault("sensors", OnlineSensors(seed=seed, glucose_sd=0.0, lactate_sd=0.0,
+                                                   DO_sd=0.0, bubbles=_no_bubbles()))
+    else:
+        kwargs.setdefault("sensors", OnlineSensors(seed=seed))
+    if run.run == 3:
+        kwargs.setdefault("pump_stops", [PumpStop(run.t_sed + 2.5, 0.5)])
+    return VirtualFacer(run=run, seed=seed, **kwargs).run_to_end()
+
+
+def _no_bubbles():
+    from ..sensors.online import BubbleModel
+
+    return BubbleModel(rate_per_day=0.0)
