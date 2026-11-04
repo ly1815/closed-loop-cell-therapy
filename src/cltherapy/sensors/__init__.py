@@ -1,7 +1,5 @@
-"""Sensors: online channels, at-line analysers, flow cytometry and soft measurements."""
+"""Sensors of the FACER: enzymatic glucose and lactate with bubbles and filtering, DO, offline counts."""
 
-from .atline import AtLineLab, FlowCytometry
-from .online import ChannelSpec, Fault, OnlineSensors
-from .soft import SoftSensors
+from .online import BubbleModel, CausalButterworth, OfflineCounts, OnlineSensors
 
-__all__ = ["AtLineLab", "ChannelSpec", "Fault", "FlowCytometry", "OnlineSensors", "SoftSensors"]
+__all__ = ["BubbleModel", "CausalButterworth", "OfflineCounts", "OnlineSensors"]

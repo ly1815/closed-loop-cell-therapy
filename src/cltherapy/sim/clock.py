@@ -1,7 +1,7 @@
 """An accelerated clock: simulated hours per wall-clock second.
 
-At speed 1.0, one simulated hour passes per second, so a 9-day run takes
-3.6 minutes. Used later by the live devices and the dashboard.
+At speed 1.0, one simulated hour passes per second, so a 6-day FACER run
+takes 2.4 minutes. Used later by the live devices and the dashboard.
 """
 
 from __future__ import annotations
